@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">开屏跳过助手</string>
+    <string name="accessibility_service_label">开屏跳过服务</string>
+    <string name="accessibility_service_description">本服务仅在目标应用（如高德地图）冷启动开屏的短暂窗口内，读取窗口节点以识别“跳过/关闭”按钮并模拟一次点击。所有数据仅保存在本机，不上传、不收集屏幕内容。</string>
+</resources>

@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+.idea/
+.kotlin/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+spec_extracted.txt
+
+# 说明书原稿与本地笔记不入库（如需入库请删除以下规则）
+*.doc
+*.docx
+~$*
+idea.txt

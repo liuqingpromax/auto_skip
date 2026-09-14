@@ -1,0 +1,4 @@
+<resources>
+    <!-- 纯 Compose 应用：主题仅需一个无 ActionBar 的系统主题，颜色/字体由 Compose 接管 -->
+    <style name="Theme.SkipStart" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
