@@ -5,6 +5,7 @@
 - 技术栈：Kotlin + Jetpack Compose + AccessibilityService，minSdk 26 / targetSdk 35
 - 原则：纯本地运行（无任何网络权限）、规则驱动、防误触、不破解目标 App
 - 架构与阶段路线：见 `docs/ARCHITECTURE.md`
+- 用户说明书：见 `docs/USER_GUIDE.md`
 
 ## 环境要求
 
