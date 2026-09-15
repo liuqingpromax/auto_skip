@@ -24,7 +24,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LocalSnackbarHostState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -120,7 +119,7 @@ fun LogScreen() {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            DebugToolbar()
+            DebugToolbar(snackbarHostState = snackbarHostState)
             FilterSection(
                 packages = packages,
                 pkgFilter = pkgFilter,
@@ -167,9 +166,8 @@ fun LogScreen() {
 
 /** 节点调试工具（阶段 2）。 */
 @Composable
-private fun DebugToolbar() {
+private fun DebugToolbar(snackbarHostState: SnackbarHostState) {
     val autoDump by AppGraph.debugAutoDump.collectAsStateWithLifecycle()
-    val snackbarHostState = LocalSnackbarHostState.current
     val scope = rememberCoroutineScope()
 
     Card(

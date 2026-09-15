@@ -18,22 +18,22 @@ import java.util.concurrent.TimeUnit
  * nodes 仅用于节点调试快照（阶段 2），只保留在内存、不落盘、不上传。
  */
 data class LogEntry(
-    val id: Long,
+    val id: Long = 0L,             // 由 LogRepository.add 统一分配
     val ts: Long,
     val packageName: String,
     val activityName: String?,
     val eventType: String?,
-    val ruleId: String?,
-    val ruleName: String?,
+    val ruleId: String? = null,
+    val ruleName: String? = null,
     val score: Int? = null,        // 命中得分（阶段9）
     val matchedBy: String? = null, // 命中的条件明细（阶段9）
-    val nodeText: String?,
-    val nodeDesc: String?,
-    val nodeViewId: String?,
-    val bounds: String?,
-    val actionType: String?,
+    val nodeText: String? = null,
+    val nodeDesc: String? = null,
+    val nodeViewId: String? = null,
+    val bounds: String? = null,
+    val actionType: String? = null,
     val success: Boolean,
-    val failReason: String?,
+    val failReason: String? = null,
     val nodes: List<NodeSnapshot>? = null,
 )
 

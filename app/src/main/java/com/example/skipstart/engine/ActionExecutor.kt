@@ -101,7 +101,7 @@ object ActionExecutor {
         snapshot: NodeSnapshot,
     ): AccessibilityNodeInfo? {
         val targetBounds = snapshot.bounds?.split(",")?.mapNotNull { it.toIntOrNull() }
-            ?.takeIf { it.size == 4 } ?: return null
+            ?.takeIf { it.size == 4 }?.toIntArray() ?: return null
 
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         queue += root to 0

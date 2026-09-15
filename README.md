@@ -12,7 +12,7 @@
 - Android SDK Platform 35
 - 首次打开时若提示 Gradle 版本，按提示使用项目自带的 Gradle 8.9 wrapper
 
-> 说明：本机（生成环境）未安装 JDK/Android SDK，未做本机构建验证；请在 Android Studio 中打开本目录完成首次 Sync。
+> 已验证：本机使用 JDK 17 + Android SDK 35 + Gradle 8.9 完成真实构建（`gradlew.bat :app:assembleDebug` → BUILD SUCCESSFUL）。
 
 ## 构建与运行
 
@@ -32,6 +32,13 @@
 gradlew.bat :app:assembleDebug
 ```
 
+## 获取 APK
+
+- **本地构建**：`gradlew.bat :app:assembleDebug` → 产物 `app/build/outputs/apk/debug/app-debug.apk`（debug 签名，可直接安装；本仓库 `dist/` 亦有现成拷贝，不入库）；
+- **云端下载**：给仓库打 `v*` 标签（如 `v0.1.0`）后，GitHub Actions 自动构建 APK 并发布为 Release 附件，手机浏览器可直接下载安装。
+
+安装提示：首次安装需在系统设置中允许该来源的「安装未知应用」。
+
 ## 调试命令（说明书第 16 章）
 
 ```bat
@@ -50,10 +57,10 @@ adb shell settings get secure enabled_accessibility_services
 | 3 | 高德单规则自动点击（内置规则 + 匹配评分 + 点击链 + 二次校验） | ✔ 完成 |
 | 4 | 防误触收口（总开关 + 设置页 + AntiTouchGuard 硬性校验） | ✔ 完成 |
 | 5 | 规则管理（列表/启用禁用/JSON 编辑/导入导出/持久化） | ✔ 完成 |
-| 6 | 学习模式（点击捕获→候选规则→确认保存） | ✔ 本次 |
+| 6 | 学习模式（点击捕获→候选规则→确认保存） | ✔ 完成 |
 | 7 | 验收清单与优化（docs/ACCEPTANCE.md、落盘去抖、合规收尾） | ✔ 完成 |
 | 8 | P1：可视化规则编辑器（表单 + JSON 双模式） | ✔ 完成 |
-| 9 | P1：点击评分细化（minScore 可配 + 日志明细）与规则模板 | ✔ 本次 |
+| 9 | P1：点击评分细化（minScore 可配 + 日志明细）与规则模板 | ✔ 完成 |
 
 ## 合规声明
 
