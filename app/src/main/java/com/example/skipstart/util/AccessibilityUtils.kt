@@ -130,30 +130,29 @@ object AccessibilityUtils {
 
     /**
      * 跳转系统无障碍设置页。
-     * 依次尝试：本应用详情页（部分 ROM 直达更准）→ 无障碍列表页 → 设置首页，
-     * 全部失败时返回 false，由 UI 提示用户手动进入。
+     *
+     * 跳转策略（v0.2.0 修正）：只用**系统保证存在**的入口，逐级降级，
+     * 且每一步都先 `resolveActivity` 校验可解析再启动，避免个别 ROM 上直接抛异常：
+     * 1. `ACTION_ACCESSIBILITY_SETTINGS`（AOSP 标准无障碍列表页）；
+     * 2. `ACTION_SETTINGS`（系统设置首页，用户可自行进入「无障碍」）。
+     *
+     * 说明：`android.settings.ACCESSIBILITY_DETAILS_SETTINGS` 是厂商/隐藏 action，
+     * 语义随 ROM 而异（部分 ROM 下 EXTRA_COMPONENT_NAME 会被忽略甚至打开错误的详情页），
+     * 因此不再作为首选，改由 UI 明确给出「分品牌路径 + 本应用服务组件名」让用户自助定位。
      */
     fun openAccessibilitySettings(context: Context): Boolean {
         val candidates = listOf(
-            // 部分 ROM（MIUI/HarmonyOS）支持直达本应用的无障碍详情页
-            Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
-                putExtra(Intent.EXTRA_COMPONENT_NAME, component(context).flattenToString())
-            },
             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS),
         )
         for (intent in candidates) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            val ok = runCatching {
-                context.startActivity(intent)
-            }.isSuccess
-            if (ok) return true
+            // 不能解析就换下一个，不要靠捕获异常来判断
+            val resolvable = intent.resolveActivity(context.packageManager) != null
+            if (!resolvable) continue
+            if (runCatching { context.startActivity(intent) }.isSuccess) return true
         }
-        // 最后退到系统设置首页，用户可自行进入「无障碍」
-        return runCatching {
-            context.startActivity(
-                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        }.isSuccess
+        return false
     }
 
     /** 打开本应用的系统详情页（权限 / 电池优化等兜底入口）。 */

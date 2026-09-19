@@ -11,7 +11,7 @@
 |---|---|---|
 | 学习模式流程不够详细、不够易懂 | 页面只有 4 行文字说明，且要求用户自己敲包名、自己猜该做什么 | 三步图文流程 + 已安装应用选择器 + 自动打开目标 App + 橙色进行中卡片（进度条 / 60 秒倒计时 / 当前该做什么）+ 结果页字段逐条解释 |
 | 学习模式效果差 | 只认 `TYPE_VIEW_CLICKED`，且**只取事件源节点自身**的文字；无文字就判定失败。另有 3 秒 `eventTime` 窗口误判、无候选挑选、无法验证 | 事件类型扩展；四级取样（自身 → 父链 → 子节点 → 点击坐标回溯）；一次学习产出多条带推荐度的候选规则；保存前可「试跑」；捕获写日志 |
-| 无障碍权限部分机型不适配 | 只用 `Settings.Secure` 字符串**严格相等**判断，遇到华为短名、MIUI 只写包名、ColorOS 拦截等一律误判为「未开启」；设置跳转无兜底 | 三级判定（官方 API → 宽容解析 → 服务真实连接态）+ 三态 UI + 分品牌路径提示 + 跳转三级兜底 + 服务侧激活探针 |
+| 无障碍权限部分机型不适配 | 只用 `Settings.Secure` 字符串**严格相等**判断，遇到华为短名、MIUI 只写包名、ColorOS 拦截等一律误判为「未开启」；设置跳转无兜底 | 三级判定（官方 API → 宽容解析 → 服务真实连接态）+ 三态 UI + 分品牌路径提示 + 跳转逐级降级（先 `resolveActivity` 校验）+ 服务侧激活探针 |
 
 ## 1. 项目文件树
 
@@ -362,7 +362,8 @@ class LearningController {
 | 服务明明开着，首页却显示「未开启」 | 华为/荣耀/三星返回 `包名/.短类名`，MIUI/ColorOS 被安全中心拦截时只写 `包名`，与全名严格相等必然失配 | 三级判定：官方 API → 宽容解析（4 种写法 + 3 种分隔符）→ 服务真实连接态 |
 | 开了开关但服务不工作 | 系统记下授权却没拉起服务；应用更新后系统重置授权 | 服务 `onServiceConnected` 后 600ms 主动读一次窗口作为激活探针；首页三态提示 + 「刷新状态」按钮 + 关掉再打开/电池白名单/重启三步指引 |
 | 找不到「开屏跳过服务」在哪 | 各 ROM 无障碍层级与命名不同（已下载的应用 / 已安装的服务 / 辅助功能…） | `AccessibilityUtils.settingsPathHint()` 按 `Build.MANUFACTURER` 给出分品牌路径；首页「机型排查」显示当前机型与系统实际启用的服务列表 |
-| 点「去开启」没反应 | 个别 ROM 没有标准 `ACTION_ACCESSIBILITY_SETTINGS` 入口 | 三级兜底跳转：无障碍详情页 → 无障碍列表页 → 系统设置首页，全部失败则提示手动进入 |
+| 点「去开启」没反应 | 个别 ROM 没有标准 `ACTION_ACCESSIBILITY_SETTINGS` 入口 | 跳转逐级降级：`ACTION_ACCESSIBILITY_SETTINGS` → `ACTION_SETTINGS`，每一步先 `resolveActivity` 校验再启动，全部失败则提示手动进入；不使用厂商/隐藏 action（语义随 ROM 而异） |
+| 用户不知道该从哪进入学习 | 学习页只挂在底部导航第 4 项 | 首页新增「让新 App 也能自动跳过」入口卡，一键跳到学习页 |
 | 开屏广告节点读不到 | 部分 ROM 把广告节点标记为「不重要」而 `visible = false` | `flagIncludeNotImportantViews`；多窗口/悬浮窗场景开启 `flagRetrieveInteractiveWindows` 并监听 `typeWindowsChanged` |
 | 长按式「跳过」学不到 | 只声明了 `typeViewClicked` | 事件类型扩展到 `typeViewLongClicked` / `typeWindowsChanged` |
 

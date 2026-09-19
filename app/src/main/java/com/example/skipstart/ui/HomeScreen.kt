@@ -59,7 +59,10 @@ private enum class ServiceState { OFF, GRANTED_IDLE, RUNNING }
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onOpenLogs: () -> Unit = {}) {
+fun HomeScreen(
+    onOpenLogs: () -> Unit = {},
+    onOpenLearning: () -> Unit = {},
+) {
     val context = LocalContext.current
 
     var granted by remember { mutableStateOf(AccessibilityUtils.isServiceEnabled(context)) }
@@ -118,6 +121,11 @@ fun HomeScreen(onOpenLogs: () -> Unit = {}) {
                 )
             }
             MasterSwitchCard(masterEnabled = settings.masterEnabled)
+            LearnEntryCard(
+                serviceRunning = state == ServiceState.RUNNING,
+                enabledRules = enabledRules,
+                onOpenLearning = onOpenLearning,
+            )
             StatsCard(
                 todayClicks = todayClicks,
                 enabledRules = enabledRules,
@@ -243,6 +251,43 @@ private fun EnableGuideCard(
                 }
                 OutlinedButton(onClick = onOpenAppDetails) { Text("应用详情") }
             }
+        }
+    }
+}
+
+/**
+ * 学习模式入口卡（v0.2.0 新增）：
+ * 让「学一个新的 App」成为首页第一等公民——这是用户最常用的动作，
+ * 不该藏在底部导航里靠用户自己发现。
+ */
+@Composable
+private fun LearnEntryCard(
+    serviceRunning: Boolean,
+    enabledRules: Int,
+    onOpenLearning: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("让新 App 也能自动跳过", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (serviceRunning) {
+                    "在列表里选一个 App，跟着提示点一次「跳过」就能学会。" +
+                        "当前已有 $enabledRules 条规则生效。"
+                } else {
+                    "先开启无障碍服务，然后在列表里选一个 App，跟着提示点一次「跳过」就能学会。"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(onClick = onOpenLearning) { Text("进入学习模式 →") }
         }
     }
 }

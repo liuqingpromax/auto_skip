@@ -31,7 +31,10 @@ fun MainScreen() {
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.weight(1f)) {
             when (selected) {
-                0 -> HomeScreen(onOpenLogs = { selected = 1 })
+                0 -> HomeScreen(
+                    onOpenLogs = { selected = 1 },
+                    onOpenLearning = { selected = 3 },
+                )
                 1 -> LogScreen()
                 2 -> RuleListScreen()
                 3 -> LearningScreen()
