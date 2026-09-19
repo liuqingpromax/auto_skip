@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         合规约束（对应说明书第 15 章）：
@@ -7,6 +8,13 @@
         - 不上传截图、节点树、日志；
         - 无障碍权限仅用于本机识别与点击。
     -->
+
+    <!--
+        v0.2.0 学习模式：需要展示本机已安装应用列表，让用户直接选目标 App
+        （避免手敲包名）。Android 11+ 必须声明 QUERY_ALL_PACKAGES 才看得到完整列表。
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <application
         android:name=".SkipStartApp"

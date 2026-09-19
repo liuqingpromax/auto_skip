@@ -1,8 +1,17 @@
 # SkipStart（开屏广告自动跳过助手）· 架构设计
 
 > 项目代号 SkipStart · Android · Kotlin + Jetpack Compose + AccessibilityService
+> 当前版本 **v0.2.0**（versionCode 2）
 > 核心原则：本地运行、规则驱动、防误触、合规、不破解目标 App。
 > 本文档依据《开屏广告自动跳过助手（Android）——AI 开发说明书》编写，接口与路线与说明书第 5、6、7、13 章对齐。
+
+## 0. v0.2.0 变更摘要
+
+| 问题 | 原因（v0.1.0） | v0.2.0 做法 |
+|---|---|---|
+| 学习模式流程不够详细、不够易懂 | 页面只有 4 行文字说明，且要求用户自己敲包名、自己猜该做什么 | 三步图文流程 + 已安装应用选择器 + 自动打开目标 App + 橙色进行中卡片（进度条 / 60 秒倒计时 / 当前该做什么）+ 结果页字段逐条解释 |
+| 学习模式效果差 | 只认 `TYPE_VIEW_CLICKED`，且**只取事件源节点自身**的文字；无文字就判定失败。另有 3 秒 `eventTime` 窗口误判、无候选挑选、无法验证 | 事件类型扩展；四级取样（自身 → 父链 → 子节点 → 点击坐标回溯）；一次学习产出多条带推荐度的候选规则；保存前可「试跑」；捕获写日志 |
+| 无障碍权限部分机型不适配 | 只用 `Settings.Secure` 字符串**严格相等**判断，遇到华为短名、MIUI 只写包名、ColorOS 拦截等一律误判为「未开启」；设置跳转无兜底 | 三级判定（官方 API → 宽容解析 → 服务真实连接态）+ 三态 UI + 分品牌路径提示 + 跳转三级兜底 + 服务侧激活探针 |
 
 ## 1. 项目文件树
 
@@ -31,9 +40,9 @@ auto_skip/
             ├── SkipStartApp.kt                  # Application：初始化 AppGraph（✔ 阶段2）
             ├── AppGraph.kt                      # 进程级依赖图：UI 与服务共享仓库（✔ 阶段2）
             ├── service/
-            │   ├── SkipAccessibilityService.kt  # 无障碍服务（✔1声明 ✔3核心 ✔4守卫 ✔6学习捕获）
+            │   ├── SkipAccessibilityService.kt  # 无障碍服务（✔1声明 ✔3核心 ✔4守卫 ✔6/v0.2 学习捕获+连接态上报）
             │   ├── AntiTouchGuard.kt            # 防误触守卫：总开关/窗口/最多一次/冷却（✔ 阶段4）
-            │   └── LearningController.kt        # 学习模式：捕获手动点击→候选规则（✔ 阶段6）
+            │   └── LearningController.kt        # 学习模式：会话状态机+多候选规则+推荐度（✔ 阶段6 / v0.2 重做）
             ├── engine/                          # ✔ 阶段3（阶段4 防误触收口）
             │   ├── Rule.kt                      # 规则模型 + JSON 序列化（与说明书七章对齐）
             │   ├── RuleEngine.kt                # 事件→规则→匹配→执行 编排
@@ -48,20 +57,21 @@ auto_skip/
             │   ├── BuiltinRules.kt              # 内置高德规则 JSON（✔ 阶段3）
             │   ├── RuleTemplates.kt             # 规则模板：通用跳过/倒计时/×关闭（✔ 阶段9/P1）
             │   ├── AppSettings.kt               # 总开关/窗口/冷却 + SettingsStore（✔ 阶段4）
+            │   ├── InstalledAppScanner.kt       # 已安装应用扫描（v0.2：学习页选目标 App 用）
             │   └── LogRepository.kt             # 日志环形存储（上限500条，✔ 阶段2）
             ├── ui/                              # Compose
             │   ├── MainScreen.kt                # 底部导航（首页/日志/规则/学习/设置，✔2/4/5/6）
-            │   ├── HomeScreen.kt                # 首页：服务状态/总开关/今日跳过（✔ 阶段1）
+            │   ├── HomeScreen.kt                # 首页：三态服务状态+机型排查（✔ 阶段1 / v0.2 增强）
             │   ├── RuleListScreen.kt            # 规则列表/启用禁用/删除/导入导出（✔ 阶段5）
             │   ├── RuleEditDialog.kt            # 可视化规则编辑器：表单+JSON 双模式（✔ 阶段8/P1）
             │   ├── LogScreen.kt                 # 日志页：实时/筛选/清空/复制 + 节点调试（✔ 阶段2）
-            │   ├── LearningScreen.kt            # 学习模式：捕获预览/候选规则/确认保存（✔ 阶段6）
+            │   ├── LearningScreen.kt            # 学习模式：三步引导/应用选择/进度/候选规则/试跑（v0.2 重做）
             │   ├── SettingsScreen.kt            # 设置：窗口/冷却/隐私/许可（✔ 阶段4）
             │   └── theme/Theme.kt               # M3 主题（✔ 阶段1）
             └── util/
                 ├── Logger.kt                    # Logcat 统一入口（✔ 阶段1）
-                ├── AccessibilityUtils.kt        # 服务状态查询/设置跳转（✔ 阶段1）
-                └── ScreenUtils.kt               # 屏幕尺寸/坐标换算（✔ 阶段3）
+                ├── AccessibilityUtils.kt        # 服务三态判定/多格式解析/设置跳转兜底（✔ 阶段1 / v0.2 适配）
+                └── ScreenUtils.kt               # 屏幕尺寸/坐标换算/启动目标App（✔ 阶段3 / v0.2 扩展）
                                                  # 注：规则 JSON 序列化已并入 engine/Rule.kt，导入导出复用
 ```
 
@@ -226,10 +236,43 @@ class LearningController {
 
 ## 4. 核心链路
 
+### 4.1 自动跳过
+
 ```
 监听前台 App → 判断是否目标包名/Activity → 抓取无障碍节点树
 → 识别“跳过/关闭/×/倒计时” → 执行点击 → 冷却防误触
 ```
+
+### 4.2 学习模式（v0.2.0 重做）
+
+```
+[UI] 学习页选目标 App（InstalledAppScanner 列本机应用）
+      ↓
+[Controller] LearningController.start(pkg)：进入 WAITING，60s 倒计时
+      ↓
+[UI] ScreenUtils.launchApp(pkg)：自动把目标 App 拉到前台
+      ↓
+[Service] 学习期间 tryAutoSkip() 首行直接 return —— 只观察，绝不自动点击
+      ↓
+[Service] 目标包窗口事件 → refreshLearningCache() 缓存节点树（供回溯与试跑）
+      ↓
+[Service] 用户手动点「跳过」→ TYPE_VIEW_CLICKED / TYPE_VIEW_LONG_CLICKED
+      ↓
+[Service] isLookingLikeSkipButton()：关键词或右上区域过滤，避免学到广告内容
+      ↓
+[Service] 四级取样：自身 → 父链（≤6 层）→ 子节点文字 → 快照右上角候选
+      ↓
+[Controller] LearningController.submit(sample)：进入 CAPTURED，自动结束学习
+      ↓
+[Controller] buildCandidates(sample)：产出多条候选规则 + 推荐度 + 推荐标记
+      ↓
+[UI] 结果页：样本字段解释 + 候选规则逐条说明 + 「先试跑一下」
+      ↓
+[UI] 保存 → RuleRepository.addOrUpdate(rule) → 下次冷启动自动跳过
+```
+
+**学习会话状态机**：`IDLE → WAITING →（用户点跳过）CAPTURED /（60s 到点）EXPIRED_TIME /（用户取消）EXPIRED_MANUAL`。
+超时与取消都保留目标包信息，UI 会给出「为什么没学到 + 下一步怎么做」的提示，而不是静默回到初始态。
 
 ## 5. 防误触与安全策略（说明书第 9 章，必须实现）
 
@@ -244,6 +287,7 @@ class LearningController {
 - 点击前二次校验节点可见、可点击、未消失；
 - 用户可一键关闭总开关。
 - 阶段 4 收口：以上硬性校验集中在 AntiTouchGuard；全局设置（总开关/窗口/冷却）为硬性上限——窗口取规则与全局的较小值、冷却取较大值，只会更严格。
+- **v0.2.0 学习模式侧防误触**：学习期间服务只观察不动作；手动点击需通过 `isLookingLikeSkipButton`（关键词 + 上方区域 + 宽度占比）过滤；学习会话 60 秒自动超时；位置兜底候选把点击坐标钳制在右上安全区，且要求 `minScore = 100` 才动手。
 
 ## 6. 内置规则 JSON（阶段 3 落地，与说明书七章示例一致）
 
@@ -287,19 +331,43 @@ class LearningController {
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 8 | 可视化规则编辑器（表单 + JSON 双模式，可互相切换回填） | ✔ 完成 |
-| 9 | 点击评分细化（规则级 minScore 可配 40-90 + 日志得分/命中条件明细）与规则模板（通用跳过/倒计时/×关闭，仅预填） | ✔ 本次 |
+| 9 | 点击评分细化（规则级 minScore 可配 40-90 + 日志得分/命中条件明细）与规则模板（通用跳过/倒计时/×关闭，仅预填） | ✔ 完成 |
+| 10 | **v0.2.0 版本更新**：学习模式重做（三步引导 / 应用选择器 / 自动拉起 / 倒计时 / 多候选 + 推荐度 / 试跑验证）、学习捕获四级取样、无障碍权限机型适配（三级判定 + 三态 UI + 分品牌路径 + 跳转兜底） | ✔ 本次 |
 | P1 后续 | 前台服务通知提高存活率（评估中，收益有限）、更多 App 实测模板 | 待开发 |
 
 ## 8. 关键设计决策
 
 1. **纯本地**：Manifest 不申请任何网络权限；截图/节点树/日志均不落盘外发。
+   v0.2.0 新增的 `QUERY_ALL_PACKAGES` 只用于读取**本机**应用列表供用户选择，不涉及网络。
 2. **存储**：MVP 用 SharedPreferences 存 JSON 字符串（说明书允许），仓库接口抽象，后续可平滑替换 Room/DataStore。
 3. **冷启动定义**：服务观察到目标包名的 `TYPE_WINDOW_STATE_CHANGED` 时记录 `launchTime` 并重置本轮点击标记，窗口 = `launchWindowMs`。
 4. **节点采集**：转成 `NodeSnapshot` 快照后匹配，不长期持有系统节点，规避 `AccessibilityNodeInfo` 回收问题。
 5. **点击策略链**：节点本身 → 可点击父节点 → bounds 中心 → 比例坐标兜底（0.92, 0.08）；点击前基于快照在当前节点树重定位存活节点（二次校验），避免点击失效节点。
-6. **学习模式**：期间只监听 `TYPE_VIEW_CLICKED` 记录节点，不自动点击；取最近 3 秒窗口内节点生成候选规则。
+6. **学习模式（v0.2.0）**：
+   - 会话由 `LearningController` 状态机管理，**一次学习只产出一个样本**，避免多按钮互相污染；
+   - 捕获走四级取样（自身 → 父链 → 子节点 → 快照右上角候选），彻底摆脱「无文字即失败」；
+   - 一条样本产出多条候选规则（文字 / 描述 / viewId / 位置兜底），带推荐度与解释，由用户挑；
+   - 规则位置兜底取自**捕获节点的实际中心比例**，并钳制在右上安全区；
+   - 节点快照缓存（`NodeCache`，5 分钟 TTL，仅内存）支撑「保存前试跑」。
+7. **无障碍状态判定（v0.2.0）**：不信任单一数据源。
+   一级 `AccessibilityManager.getEnabledAccessibilityServiceList()`，
+   二级宽容解析 `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`（全名 / 短名 / 仅包名 / 组件解析四种写法），
+   三级服务运行期真实连接态 `AccessibilityUtils.serviceConnected`（由服务 onServiceConnected / onUnbind 直接写入）。
+   UI 由此呈现三态，把 ROM 差异暴露成可操作的提示，而不是一句「未开启」。
 
-## 9. 合规与风险（摘录说明书第 15 章）
+## 9. 无障碍机型适配策略（v0.2.0 新增）
+
+| 现象 | 根因 | 我方对策 |
+|---|---|---|
+| 服务明明开着，首页却显示「未开启」 | 华为/荣耀/三星返回 `包名/.短类名`，MIUI/ColorOS 被安全中心拦截时只写 `包名`，与全名严格相等必然失配 | 三级判定：官方 API → 宽容解析（4 种写法 + 3 种分隔符）→ 服务真实连接态 |
+| 开了开关但服务不工作 | 系统记下授权却没拉起服务；应用更新后系统重置授权 | 服务 `onServiceConnected` 后 600ms 主动读一次窗口作为激活探针；首页三态提示 + 「刷新状态」按钮 + 关掉再打开/电池白名单/重启三步指引 |
+| 找不到「开屏跳过服务」在哪 | 各 ROM 无障碍层级与命名不同（已下载的应用 / 已安装的服务 / 辅助功能…） | `AccessibilityUtils.settingsPathHint()` 按 `Build.MANUFACTURER` 给出分品牌路径；首页「机型排查」显示当前机型与系统实际启用的服务列表 |
+| 点「去开启」没反应 | 个别 ROM 没有标准 `ACTION_ACCESSIBILITY_SETTINGS` 入口 | 三级兜底跳转：无障碍详情页 → 无障碍列表页 → 系统设置首页，全部失败则提示手动进入 |
+| 开屏广告节点读不到 | 部分 ROM 把广告节点标记为「不重要」而 `visible = false` | `flagIncludeNotImportantViews`；多窗口/悬浮窗场景开启 `flagRetrieveInteractiveWindows` 并监听 `typeWindowsChanged` |
+| 长按式「跳过」学不到 | 只声明了 `typeViewClicked` | 事件类型扩展到 `typeViewLongClicked` / `typeWindowsChanged` |
+
+## 10. 合规与风险（摘录说明书第 15 章）
 
 - 可能违反目标 App 用户协议；应用商店对无障碍权限审核极严，可能拒绝上架。
 - 本工具仅用于个人学习与自用：不牟利、不上传数据、不破解、不修改目标 App、不承诺 100% 适配。
+- 学习模式读取本机已安装应用列表仅用于让用户选择目标 App，列表不出本机、不落盘、不上传。

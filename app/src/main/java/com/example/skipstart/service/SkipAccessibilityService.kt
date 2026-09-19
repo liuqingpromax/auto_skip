@@ -7,21 +7,25 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.example.skipstart.AppGraph
 import com.example.skipstart.capture.NodeCollector
 import com.example.skipstart.capture.NodeSnapshot
 import com.example.skipstart.data.LogEntry
 import com.example.skipstart.engine.Rule
+import com.example.skipstart.util.AccessibilityUtils
 import com.example.skipstart.util.Logger
+import com.example.skipstart.util.ScreenUtils
 
 /**
  * 开屏广告自动跳过 · 无障碍服务。
  *
- * 阶段路线（对应说明书第 13 章）：
- * - 阶段 1：系统声明与事件接通；
- * - 阶段 2：节点调试工具；
- * - 阶段 3：内置高德规则自动点击链路；
- * - 阶段 4（当前）：防误触收口——AntiTouchGuard 集中硬性校验（总开关/窗口/最多一次/冷却）。
+ * v0.2.0 两类改动：
+ * 1. **机型适配**：把「服务真实连接状态」上报给 [AccessibilityUtils]，
+ *    不再只依赖 Secure 表的字符串判断；同时把点击类事件声明扩展到长按与多窗口；
+ * 2. **学习模式效果**：点击捕获不再只认「事件源节点自身带文字」这一种情况，
+ *    而是沿着「自身 → 父链 → 子节点 → 点击坐标回溯」四级兜底取样，
+ *    并把窗口节点树缓存下来，供学习页做「规则试跑」验证。
  */
 class SkipAccessibilityService : AccessibilityService() {
 
@@ -35,25 +39,100 @@ class SkipAccessibilityService : AccessibilityService() {
     private var noMatchLogged = false
     private var consecutiveFailures = 0
 
+    /** v0.2.0：最近一次窗口节点快照缓存（仅内存），供学习页「试跑规则」与坐标回溯使用。 */
+    private val learningCache = NodeCache()
+
+    private val ruleCache = NodeCache()
+
+    /** 只读快照缓存：包名 + 时间戳 + 节点列表，过期即失效。 */
+    private class NodeCache {
+        @Volatile
+        var packageName: String? = null
+
+        @Volatile
+        var at: Long = 0L
+
+        @Volatile
+        var nodes: List<NodeSnapshot> = emptyList()
+
+        fun put(pkg: String, list: List<NodeSnapshot>) {
+            packageName = pkg
+            nodes = list
+            at = System.currentTimeMillis()
+        }
+
+        fun get(pkg: String?): List<NodeSnapshot>? {
+            if (nodes.isEmpty()) return null
+            if (pkg != null && packageName != pkg) return null
+            if (System.currentTimeMillis() - at > CACHE_TTL_MS) return null
+            return nodes
+        }
+
+        fun clear() {
+            nodes = emptyList()
+            packageName = null
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        Logger.i(TAG, "无障碍服务已连接")
+        AccessibilityUtils.setServiceConnected(true)
+        Logger.i(TAG, "无障碍服务已连接（版本 v$SERVICE_VERSION）")
+        // 部分 ROM（MIUI / ColorOS）在授予无障碍后需要一次窗口事件才会激活，
+        // 这里主动读一次窗口，避免「开了服务却毫无反应」。
+        mainHandler.postDelayed({ refreshLearningCache() }, ACTIVATION_PROBE_MS)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        instance = null
+        release()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        instance = null
-        mainHandler.removeCallbacks(dumpRunnable)
+        release()
         super.onDestroy()
+    }
+
+    private fun release() {
+        instance = null
+        AccessibilityUtils.setServiceConnected(false)
+        mainHandler.removeCallbacksAndMessages(null)
+        learningCache.clear()
+        ruleCache.clear()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
+
+        // 学习模式：只观察、不自动点击（真正的拦截点在 tryAutoSkip 首行）。
+        // 注意这里**不 return**：目标 App 可能同时是自动跳过的目标包，
+        // 学习结束后仍需正常走下面的常规链路。
+        val learningActive = AppGraph.learningController.enabled.value &&
+            pkg == AppGraph.learningController.targetPackage.value
+        if (learningActive) {
+            when (event.eventType) {
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    lastPackage = pkg
+                    lastActivity = event.className?.toString()
+                    AppGraph.learningController.notifyTargetForeground()
+                    refreshLearningCache()
+                }
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+                -> refreshLearningCache()
+
+                AccessibilityEvent.TYPE_VIEW_CLICKED,
+                AccessibilityEvent.TYPE_VIEW_LONG_CLICKED,
+                -> {
+                    lastPackage = pkg
+                    lastActivity = event.className?.toString()
+                    captureLearningClick(event)
+                }
+                else -> Unit
+            }
+        }
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 lastPackage = pkg
@@ -68,13 +147,12 @@ class SkipAccessibilityService : AccessibilityService() {
                     scheduleDump()
                 }
             }
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+            -> {
                 if (AppGraph.ruleRepository.isTargetPackage(pkg)) {
                     tryAutoSkip()
                 }
-            }
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                handleLearningClick(event)
             }
             else -> Unit
         }
@@ -114,6 +192,9 @@ class SkipAccessibilityService : AccessibilityService() {
         lastScanTime = now
 
         val root = rootInActiveWindow ?: return
+        val nodes = NodeCollector.collect(root)
+        ruleCache.put(pkg, nodes)
+
         val result = AppGraph.ruleEngine.handleEvent(pkg, lastActivity, root, this) ?: return
 
         if (result.actionType != null || result.failReason != null) {
@@ -140,33 +221,280 @@ class SkipAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 阶段 6：学习模式捕获手动点击（说明书第 10 章，仅记录、不自动点击）。 */
-    private fun handleLearningClick(event: AccessibilityEvent) {
-        if (!AppGraph.learningController.enabled.value) return
+    // ---------------------------------------------------------------------
+    // 学习模式（阶段 6 / v0.2.0 增强）
+    // ---------------------------------------------------------------------
+
+    /**
+     * 学习模式捕获手动点击。
+     *
+     * 旧版只取 `event.source` 自身的文字，遇到「点击的是无文字的图片/容器」就直接失败，
+     * 这是学习模式效果差的主因。现在按四级取信息：
+     * 自身 → 也可点击的父节点 → 子节点文字 → 用点击坐标在当前节点树里回溯。
+     */
+    private fun captureLearningClick(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
         if (pkg != AppGraph.learningController.targetPackage.value) return
-        // 最近 3 秒窗口：过期的点击事件不采信
-        if (SystemClock.uptimeMillis() - event.eventTime > LEARNING_CAPTURE_WINDOW_MS) return
-        val node = event.source ?: return
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
+        if (!isLookingLikeSkipButton(event)) return
+
+        val (screenW, screenH) = ScreenUtils.screenSize(this)
+
+        val source = event.source
+        var method = LearnedSample.METHOD_SELF
+        var note: String? = null
+
+        var text = source?.text?.toString()?.takeIf { it.isNotBlank() }
+        var desc = source?.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+        var viewId = source?.viewIdResourceName?.takeIf { it.isNotBlank() }
+        val className = source?.className?.toString()?.takeIf { it.isNotBlank() }
+        var clickable = source?.isClickable == true
+        var bounds = source?.let { boundsString(it) }
+
+        // 一级：自身信息不足，向上找语义更全的父节点
+        if (isSparse(text, desc, viewId) && source != null) {
+            var node: AccessibilityNodeInfo? = source.parent
+            var hop = 0
+            while (node != null && hop < PARENT_SCAN_LIMIT) {
+                val pText = node.text?.toString()?.takeIf { it.isNotBlank() }
+                val pDesc = node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+                val pId = node.viewIdResourceName?.takeIf { it.isNotBlank() }
+                if (!isSparse(pText, pDesc, pId)) {
+                    text = pText
+                    desc = pDesc
+                    viewId = pId
+                    clickable = node.isClickable
+                    bounds = boundsString(node)
+                    method = LearnedSample.METHOD_PARENT
+                    note = "按钮文字取自上层节点（第 ${hop + 1} 层）"
+                    break
+                }
+                node = node.parent
+                hop++
+            }
+        }
+
+        // 二级：父链也没有，看子节点文字（整块可点击的广告卡片常见）
+        if (isSparse(text, desc, viewId) && source != null) {
+            val fromChild = bestChildText(source)
+            if (fromChild != null) {
+                text = fromChild
+                method = LearnedSample.METHOD_CHILD
+                note = "按钮文字取自子节点"
+                if (bounds == null) bounds = boundsString(source)
+            }
+        }
+
+        // 三级：事件没有 source（部分 ROM 不提供），在缓存的节点树里找右上角候选节点
+        if (isSparse(text, desc, viewId) && bounds == null) {
+            val hit = topRightCandidate(pkg)
+            if (hit != null) {
+                text = hit.text?.takeIf { it.isNotBlank() }
+                desc = hit.contentDescription?.takeIf { it.isNotBlank() }
+                viewId = hit.viewIdResourceName?.takeIf { it.isNotBlank() }
+                clickable = hit.clickable
+                bounds = hit.bounds
+                method = LearnedSample.METHOD_COORDINATE
+                note = "系统未提供点击节点，已从窗口快照中取右上角候选"
+            }
+        }
+
+        source?.recycle()
+
+        // 点击位置：优先用命中节点 bounds 的中心，其次退回右上角默认位置
+        val center = centerOf(bounds)
+        val hasCenter = center != null && screenW > 0 && screenH > 0
+        val fallbackX = if (hasCenter) center!!.first / screenW else DEFAULT_FALLBACK_X
+        val fallbackY = if (hasCenter) center!!.second / screenH else DEFAULT_FALLBACK_Y
+
+        if (bounds == null && !hasCenter) {
+            method = LearnedSample.METHOD_COORDINATE
+            note = "未拿到节点位置，规则将主要依赖右上角兜底点击"
+        }
+
         val sample = LearnedSample(
             packageName = pkg,
-            activityName = event.className?.toString(),
-            text = node.text?.toString(),
-            contentDescription = node.contentDescription?.toString(),
-            viewIdResourceName = node.viewIdResourceName,
-            className = node.className?.toString(),
-            bounds = "${rect.left},${rect.top},${rect.right},${rect.bottom}",
-            clickable = node.isClickable,
+            activityName = event.className?.toString() ?: lastActivity,
+            text = text,
+            contentDescription = desc,
+            viewIdResourceName = viewId,
+            className = className,
+            bounds = bounds,
+            clickable = clickable,
             capturedAt = System.currentTimeMillis(),
+            tapRatioX = fallbackX.coerceIn(0f, 1f),
+            tapRatioY = fallbackY.coerceIn(0f, 1f),
+            screenWidth = screenW,
+            screenHeight = screenH,
+            captureMethod = method,
+            captureNote = note,
         )
-        node.recycle()
+
         AppGraph.learningController.submit(sample)
-        Logger.i(
-            TAG,
-            "学习模式捕获点击：pkg=$pkg text=${sample.text} viewId=${sample.viewIdResourceName}"
+        // 学习捕获也写日志：用户在「日志」页能看到「学习模式确实在工作」
+        addLog(
+            rule = null,
+            snapshot = NodeSnapshot(
+                text = sample.text,
+                contentDescription = sample.contentDescription,
+                viewIdResourceName = sample.viewIdResourceName,
+                className = sample.className,
+                bounds = sample.bounds,
+                clickable = sample.clickable,
+                enabled = true,
+                visible = true,
+                depth = 0,
+                index = 0,
+                parentIndex = -1,
+            ),
+            actionType = "LEARN_CAPTURE",
+            success = true,
+            failReason = null,
+            eventType = "LEARNING",
+            matchedBy = "捕获方式=$method${note?.let { "（$it）" } ?: ""}",
+            pkgOverride = pkg,
         )
+        Logger.i(TAG, "学习捕获成功：method=$method text=$text viewId=$viewId")
+    }
+
+    private fun isSparse(text: String?, desc: String?, viewId: String?): Boolean =
+        text.isNullOrBlank() && desc.isNullOrBlank() && viewId.isNullOrBlank()
+
+    private fun boundsString(node: AccessibilityNodeInfo): String {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        return "${rect.left},${rect.top},${rect.right},${rect.bottom}"
+    }
+
+    /** 子节点里第一个有文字的节点（优先命中「跳过/关闭」关键词，其次取最长文本）。 */
+    private fun bestChildText(node: AccessibilityNodeInfo): String? {
+        val candidates = ArrayList<String>()
+        collectChildTexts(node, 0, candidates, MAX_CHILD_SCAN)
+        if (candidates.isEmpty()) return null
+        val hinted = candidates.firstOrNull { candidate ->
+            LearningController.SKIP_HINTS.any { candidate.contains(it, ignoreCase = true) }
+        }
+        return hinted ?: candidates.maxByOrNull { it.length }
+    }
+
+    private fun collectChildTexts(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        out: MutableList<String>,
+        budget: Int,
+    ) {
+        if (depth > CHILD_SCAN_DEPTH || out.size >= budget) return
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            if (out.size >= budget) return
+            val child = node.getChild(i) ?: continue
+            val t = child.text?.toString()?.takeIf { it.isNotBlank() }
+                ?: child.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+            if (t != null) out += t
+            collectChildTexts(child, depth + 1, out, budget)
+            child.recycle()
+        }
+    }
+
+    /**
+     * 四级兜底：系统没给出点击节点时，从缓存节点树里挑一个最像「跳过」的右上角节点。
+     *
+     * 为什么这样做：开屏广告的「跳过」几乎总在右上角，且带「跳过 / 关闭 / 跳过 3」文字；
+     * 即使拿不到事件源，也能靠位置 + 关键词给出可用样本，避免学习直接失败。
+     */
+    private fun topRightCandidate(pkg: String): NodeSnapshot? {
+        val nodes = ensureLearningCache(pkg) ?: return null
+        val (screenW, screenH) = ScreenUtils.screenSize(this)
+        if (screenW <= 0 || screenH <= 0) return null
+
+        var best: NodeSnapshot? = null
+        var bestScore = Int.MIN_VALUE
+        for (node in nodes) {
+            if (!node.visible) continue
+            val b = node.bounds?.split(",")?.mapNotNull { it.toIntOrNull() } ?: continue
+            if (b.size != 4) continue
+            val cx = (b[0] + b[2]) / 2f
+            val cy = (b[1] + b[3]) / 2f
+            if (cx <= 0.5f * screenW || cy >= 0.35f * screenH) continue
+
+            val label = (node.text ?: "") + " " + (node.contentDescription ?: "")
+            var score = 0
+            if (LearningController.SKIP_HINTS.any { label.contains(it, ignoreCase = true) }) score += 100
+            if (node.clickable) score += 20
+            if (node.text != null || node.contentDescription != null) score += 10
+            // 越靠右上角越优先
+            score += ((1f - cx / screenW) * 10).toInt() + ((1f - cy / screenH) * 10).toInt()
+            if (score > bestScore) {
+                best = node
+                bestScore = score
+            }
+        }
+        return best
+    }
+
+    /**
+     * 学习捕获的外科手术式过滤：目标包里任何位置的手动点击都会被上报，
+     * 但开屏广告期间用户也可能真的在点广告内容。这里只放行「像跳过按钮」的点击：
+     * 1. 有「跳过 / 关闭」类关键词 → 放行；
+     * 2. 落在上方区域（可能的跳过按钮位置）且被标记可点击 → 放行；
+     * 3. 其余（页面中部的大块内容、列表项等）→ 不采信，并在日志里留一条说明。
+     */
+    private fun isLookingLikeSkipButton(event: AccessibilityEvent): Boolean {
+        val node = event.source
+        val label = buildString {
+            node?.text?.let { append(it) }
+            append(' ')
+            node?.contentDescription?.let { append(it) }
+        }
+        if (LearningController.SKIP_HINTS.any { label.contains(it, ignoreCase = true) }) {
+            node?.recycle()
+            return true
+        }
+        var allowed = false
+        if (node != null) {
+            val (screenW, screenH) = ScreenUtils.screenSize(this)
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            val cy = rect.centerY()
+            allowed = screenW > 0 && screenH > 0 &&
+                cy < screenH * SKIP_ZONE_HEIGHT_RATIO &&
+                rect.width() < screenW * 0.6f
+        }
+        node?.recycle()
+        if (!allowed) {
+            addLog(
+                rule = null,
+                snapshot = null,
+                actionType = "LEARN_IGNORE",
+                success = false,
+                failReason = "这次点击不像「跳过 / 关闭」按钮，已忽略（避免学到广告内容）",
+                eventType = "LEARNING",
+                matchedBy = "过滤规则：关键词 + 上方区域",
+                pkgOverride = event.packageName?.toString(),
+            )
+        }
+        return allowed
+    }
+
+    private fun centerOf(bounds: String?): Pair<Float, Float>? {
+        val b = bounds?.split(",")?.mapNotNull { it.toIntOrNull() } ?: return null
+        if (b.size != 4) return null
+        if (b[2] <= b[0] || b[3] <= b[1]) return null
+        return ((b[0] + b[2]) / 2f) to ((b[1] + b[3]) / 2f)
+    }
+
+    private fun refreshLearningCache() {
+        val pkg = AppGraph.learningController.targetPackage.value ?: return
+        val root = rootInActiveWindow ?: return
+        val actual = root.packageName?.toString()
+        if (actual != null && actual != pkg) return
+        val nodes = NodeCollector.collect(root)
+        if (nodes.isNotEmpty()) learningCache.put(pkg, nodes)
+    }
+
+    private fun ensureLearningCache(pkg: String): List<NodeSnapshot>? {
+        learningCache.get(pkg)?.let { return it }
+        refreshLearningCache()
+        return learningCache.get(pkg)
     }
 
     private fun addLog(
@@ -178,11 +506,12 @@ class SkipAccessibilityService : AccessibilityService() {
         eventType: String,
         score: Int? = null,
         matchedBy: String? = null,
+        pkgOverride: String? = null,
     ) {
         AppGraph.logRepository.add(
             LogEntry(
                 ts = System.currentTimeMillis(),
-                packageName = guard.currentLaunchPkg ?: lastPackage ?: "?",
+                packageName = pkgOverride ?: guard.currentLaunchPkg ?: lastPackage ?: "?",
                 activityName = lastActivity,
                 eventType = eventType,
                 ruleId = rule?.id,
@@ -218,6 +547,13 @@ class SkipAccessibilityService : AccessibilityService() {
         }
         val pkg = root.packageName?.toString() ?: lastPackage ?: "?"
         val snapshots = NodeCollector.collect(root)
+        if (snapshots.isNotEmpty()) {
+            ruleCache.put(pkg, snapshots)
+            // 学习会话进行中抓的树，同时作为学习回溯依据
+            if (AppGraph.learningController.targetPackage.value == pkg) {
+                learningCache.put(pkg, snapshots)
+            }
+        }
         AppGraph.logRepository.add(
             LogEntry(
                 ts = System.currentTimeMillis(),
@@ -233,6 +569,58 @@ class SkipAccessibilityService : AccessibilityService() {
         Logger.i(TAG, "dump: pkg=$pkg nodes=${snapshots.size}")
     }
 
+    /**
+     * 学习页「试跑规则」：用最近一次缓存的节点树在当前进程内评估规则命中情况，
+     * 让用户在保存前就知道规则能不能用（v0.2.0 新增）。
+     */
+    fun evaluateRule(rule: Rule): RuleEngineTrial {
+        val (w, h) = ScreenUtils.screenSize(this)
+        val targetPkg = rule.packageNames.firstOrNull()
+        val nodes = learningCache.get(targetPkg) ?: ruleCache.get(targetPkg)
+        if (nodes.isNullOrEmpty()) {
+            return RuleEngineTrial(
+                available = false,
+                nodeCount = 0,
+                hitScore = null,
+                hitText = null,
+                hitBounds = null,
+                message = "还没有可用的窗口快照：请到「日志」页点「立即抓取」，或重新学习一次",
+            )
+        }
+        val match = com.example.skipstart.engine.RuleMatcher.match(rule, nodes, w, h)
+        return if (match == null) {
+            RuleEngineTrial(
+                available = true,
+                nodeCount = nodes.size,
+                hitScore = null,
+                hitText = null,
+                hitBounds = null,
+                message = "在最近一次窗口快照（${nodes.size} 个节点）中没有找到匹配节点。" +
+                    "这通常说明开屏已经结束——保存后在真实开屏时验证即可。",
+            )
+        } else {
+            RuleEngineTrial(
+                available = true,
+                nodeCount = nodes.size,
+                hitScore = match.score,
+                hitText = match.snapshot.text ?: match.snapshot.contentDescription,
+                hitBounds = match.snapshot.bounds,
+                message = "命中成功：得分 ${match.score}，按钮「" +
+                    "${match.snapshot.text ?: match.snapshot.contentDescription ?: "无文字"}」",
+            )
+        }
+    }
+
+    /** 试跑结果（纯数据，直接给 UI 展示）。 */
+    data class RuleEngineTrial(
+        val available: Boolean,
+        val nodeCount: Int,
+        val hitScore: Int?,
+        val hitText: String?,
+        val hitBounds: String?,
+        val message: String,
+    )
+
     /** 延迟抓取：等窗口内容稳定后再取树。 */
     private fun scheduleDump() {
         mainHandler.removeCallbacks(dumpRunnable)
@@ -247,13 +635,21 @@ class SkipAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SkipAccessibilityService"
+        private const val SERVICE_VERSION = "0.2.0"
         private const val DUMP_DELAY_MS = 200L
+        private const val ACTIVATION_PROBE_MS = 600L
         private const val SCAN_THROTTLE_MS = 300L
         private const val MAX_CONSECUTIVE_FAILURES = 3
-        private const val LEARNING_CAPTURE_WINDOW_MS = 3_000L
+        private const val PARENT_SCAN_LIMIT = 6
+        private const val CHILD_SCAN_DEPTH = 3
+        private const val MAX_CHILD_SCAN = 12
+        private const val CACHE_TTL_MS = 5 * 60 * 1000L
+        private const val SKIP_ZONE_HEIGHT_RATIO = 0.35f
+        private const val DEFAULT_FALLBACK_X = 0.92f
+        private const val DEFAULT_FALLBACK_Y = 0.08f
         private const val REASON_WINDOW_EXPIRED = "超过冷启动窗口"
 
-        /** 同进程实例句柄，供 UI 调用 dumpCurrentWindow。 */
+        /** 同进程实例句柄，供 UI 调用 dumpCurrentWindow / evaluateRule。 */
         @Volatile
         var instance: SkipAccessibilityService? = null
             private set

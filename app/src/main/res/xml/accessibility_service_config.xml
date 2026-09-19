@@ -1,10 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 无障碍服务配置，与说明书第 6 章保持一致 -->
+<!--
+  无障碍服务配置（v0.2.0 机型适配版，说明书第 6 章）。
+
+  关键项说明：
+  - accessibilityEventTypes：补充 typeViewLongClicked（部分广告「跳过」需长按）
+    与 typeWindowsChanged（多窗口/悬浮窗开屏，MIUI、HarmonyOS 常见）；
+  - accessibilityFlags：
+      flagReportViewIds          读取 viewId，提升规则稳定性；
+      flagIncludeNotImportantViews 部分 ROM 的开屏广告节点被标记为「不重要」而不可见，
+                                   开启后仍能读到，显著提升识别率；
+      flagRetrieveInteractiveWindows 支持从多窗口中取当前活动窗口节点；
+  - canRetrieveWindowContent / canPerformGestures：读节点 + 手势点击，缺一不可；
+  - notificationTimeout 150ms：兼顾响应速度与耗电（100ms 在低端机上事件过于密集）。
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewClicked|typeViewLongClicked"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
-    android:notificationTimeout="100" />
+    android:notificationTimeout="150"
+    android:summary="@string/accessibility_service_summary" />
