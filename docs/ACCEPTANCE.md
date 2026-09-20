@@ -99,6 +99,32 @@ adb logcat -s SkipStart
 - OCR 兜底 / 图像模板匹配为 P2 未实现；
 - 规则编辑器：可视化表单已实现（表单 + JSON 双模式）；复杂正则仍可切换 JSON 精确编辑。
 
+## 4.1 构建产物核对（每次发版必做）
+
+自动化只能证明「编译通过」，还要证明**配置真的进了 APK**。以下命令可直接复现：
+
+```bat
+:: 1) 版本号必须与 git 标签一致
+aapt2 dump badging app\build\outputs\apk\debug\app-debug.apk | findstr /C:"package:"
+
+:: 2) 无障碍服务配置的实际打包值（不是看源码 XML，而是看 APK 里的编译结果）
+aapt2 dump xmltree app\build\outputs\apk\debug\app-debug.apk --file res/xml/accessibility_service_config.xml
+```
+
+v0.2.5 实测结果（2026-09 核对，android.jar 常量真值比对）：
+
+| 配置项 | APK 内值 | 解码 |
+|---|---|---|
+| `accessibilityEventTypes` | `0x00400823` | viewClicked(0x1) + viewLongClicked(0x2) + windowStateChanged(0x20) + windowContentChanged(0x800) + windowsChanged(0x400000) |
+| `accessibilityFlags` | `0x00000052` | reportViewIds(0x10) + includeNotImportantViews(0x2) + retrieveInteractiveWindows(0x40) |
+| `notificationTimeout` | `150` | ✅ 与源码一致 |
+| `canPerformGestures` | `true` | ✅ 手势点击可用（ActionExecutor 第 3/4 级依赖） |
+| `canRetrieveWindowContent` | `true` | ✅ 可读节点树 |
+| `versionCode` / `versionName` | `3` / `0.2.5` | ✅ 与标签 `v0.2.5` 一致 |
+
+> 事件类型常量真值可用 `javap -constants -classpath <sdk>/platforms/android-35/android.jar android.view.accessibility.AccessibilityEvent` 查得，
+> 不要凭记忆推算位掩码（本仓库曾因此误判 `typeWindowsChanged` 未生效）。
+
 ## 5. 合规与风险（说明书第十五章摘录）
 
 - 此类工具可能违反目标 App 用户协议；应用商店对无障碍权限审核极严，可能拒绝上架；
