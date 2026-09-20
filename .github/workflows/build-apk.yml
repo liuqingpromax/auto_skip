@@ -1,14 +1,19 @@
 name: Build APK
 
 # 用途：云端构建 debug APK。
-# - 推送 v* 标签（如 v0.2.5）自动构建并发布到 Release，供安卓直接下载；
+# - 推送 v* 标签（如 v0.3.0）自动构建并发布到 Release，供安卓直接下载；
 # - 也可在 Actions 页手动触发（workflow_dispatch），产物为构建附件。
+# 仓库 Settings → Actions → Settings → Workflow permissions 需为 Read and write。
 #
-# 排查提示：若本工作流失败，先看失败的 step 名称。
-# - "Verify toolchain"        → JDK / gradlew 权限 / Gradle wrapper 问题
-# - "Install required SDK"    → SDK 组件缺失或 license 未接受
-# - "Build debug APK"         → 真正的编译错误，日志里有 :app:compileDebugKotlin 的报错
-# - "Publish release"         → 多为 GITHUB_TOKEN 权限问题（Settings → Actions → Workflow permissions 需为 Read and write）
+# 若本工作流失败，先看失败的 step 名称：
+# - "Set up ..."        → 第三方 action 或网络抖动，与本项目代码无关
+# - "Build debug APK"   → 真正的编译错误，日志里会有 e: 开头或 :app:compileDebugKotlin FAILED
+# - "Rename APK ..."    → 上一步没产出 APK（连带失败）
+# - "Publish release"   → GITHUB_TOKEN 权限不足（见上面的 Workflow permissions）
+#
+# 设计原则：**只放确定能跑的命令，诊断命令一律 || true**。
+# 曾经的教训：放了一个体检步骤，其中 `file gradlew` 在 ubuntu runner 上不存在
+# （GitHub 镜像为省空间未预装 file），导致该步骤失败并连带跳过构建，白烧两次 CI。
 
 on:
   push:
@@ -32,31 +37,15 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install required SDK components
-        # compileSdk 35 需要 platform 35 与 build-tools 35.0.0；
-        # --licenses 交给 setup-android 处理，这里只补齐组件。
-        run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify toolchain
-        # 这一步只做体检，失败信息能直接定位是环境问题还是代码问题。
-        run: |
-          set -x
-          java -version
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
-          ls -l gradlew
-          file gradlew || true
-          head -n 1 gradlew | od -c | head -2
-          cat gradle/wrapper/gradle-wrapper.properties
-          ./gradlew --version
-
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        # chmod +x：仓库里 gradlew 的模式位是 100644（无执行位），checkout 后必须补上。
+        # 此处刻意不做任何环境体检——诊断失败会连带跳过构建，得不偿失。
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Rename APK with version
         run: |
@@ -85,12 +74,14 @@ jobs:
 
             开屏广告自动跳过助手（Android 8.0+）。下载下方 APK 直接安装即可。
 
-            ### 本版重点
-            - 学习模式重做：三步引导、应用列表选择、自动拉起目标 App、60 秒倒计时
-            - 学习效果提升：四级取样、多条候选规则 + 推荐度、保存前可试跑
-            - 无障碍权限机型适配：三级状态判定、三态首页、分品牌设置路径
-            - CI 修复：补齐 SDK 组件安装与工具链体检，构建失败可一眼定位
+            ### 本版重点（v0.3.0）
+            - **按钮不再只认右上角**：位置改为加权（四角 25 分、上下边缘 18~22、左右边缘 10、屏幕中间 0），
+              左上 / 右下 / 左下 / 顶部通栏 / 底部横幅的按钮都能点到
+            - **支持叉号 ✕ 关闭按钮**：新增「可点击 + 无文字 + 小尺寸 + 位于边缘」的纯图标识别
+            - **关键词扩充**：✕ ✖ ✗ × ⨯ ╳ ❌ ❎、跳過 / 略過 / 關閉、skip / close / dismiss / cancel
+            - **内置规则可自动升级**：修复「老用户升级后拿不到新内置规则」的缺陷
 
-            完整说明见仓库 README 与 docs/USER_GUIDE.md。
+            完整说明见仓库 README 与 docs/USER_GUIDE.md；
+            验收用例见 docs/ACCEPTANCE.md（A 组学习模式 / B 组机型适配 / C 组匹配通用性）。
 
             > 首次安装需允许「安装未知应用」；本应用无网络权限，全部数据仅存本机。
