@@ -1,8 +1,9 @@
 name: Build APK
 
 # 用途：云端构建 debug APK。
-# - 推送 v* 标签（如 v0.2.1）自动构建并发布到 Release，供安卓直接下载；
+# - 推送 v* 标签（如 v0.2.4）自动构建并发布到 Release，供安卓直接下载；
 # - 也可在 Actions 页手动触发（workflow_dispatch），产物为构建附件。
+# 仓库 Settings → Actions → Workflow permissions 已设为 Read and write。
 
 on:
   push:
@@ -13,9 +14,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      metadata: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
