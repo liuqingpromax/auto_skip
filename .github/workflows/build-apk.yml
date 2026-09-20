@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: write
-  releases: write
+  metadata: read
 
 jobs:
   build:
