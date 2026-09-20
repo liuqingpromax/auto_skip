@@ -1,7 +1,7 @@
 name: Build APK
 
 # 用途：云端构建 debug APK。
-# - 推送 v* 标签（如 v0.2.0）自动构建并发布到 Release，供安卓直接下载；
+# - 推送 v* 标签（如 v0.2.1）自动构建并发布到 Release，供安卓直接下载；
 # - 也可在 Actions 页手动触发（workflow_dispatch），产物为构建附件。
 
 on:
@@ -9,6 +9,10 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
+  releases: write
 
 jobs:
   build:
@@ -18,21 +22,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
-      - name: Set up Gradle 8.9
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
 
       - name: Rename APK with version
         run: |
@@ -53,6 +57,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           name: SkipStart v${{ env.APK_VERSION }}
           files: release/*.apk
           body: |
