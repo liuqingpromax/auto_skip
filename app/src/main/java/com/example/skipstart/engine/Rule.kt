@@ -81,6 +81,17 @@ data class Rule(
     val minScore: Int = 60,                // 命中阈值：总分 ≥ 此值才执行（阶段9 规则级可配）
     val conditions: List<RuleCondition>,
     val action: RuleAction,
+    /**
+     * 内置规则版本号（v0.3.0 新增）。
+     *
+     * 背景：`RuleRepository.load()` 原先只在内置规则**缺失**时补齐，已存在就原样保留。
+     * 结果是老用户升级后永远拿不到改好的内置规则——v0.2.x 修了匹配逻辑，
+     * 但用户本机持久化的旧规则（写死 `top_right` 的那版）一直生效，改动等于白做。
+     *
+     * 现在：内置规则带版本号，持久化版本较低时**自动升级为新规则内容**
+     * （保留用户的启用/禁用选择），用户自己新建的规则不受影响。
+     */
+    val version: Int = 0,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -95,6 +106,8 @@ data class Rule(
         put("minScore", minScore)
         put("conditions", JSONArray().apply { conditions.forEach { put(it.toJson()) } })
         put("action", action.toJson())
+        // version == 0 表示用户规则或旧数据，不写入 JSON，避免污染导出的规则文件
+        if (version > 0) put("version", version)
     }
 
     companion object {
@@ -124,6 +137,7 @@ data class Rule(
                 minScore = o.optInt("minScore", 60),
                 conditions = conditions,
                 action = action,
+                version = o.optInt("version", 0),
             )
         }
     }

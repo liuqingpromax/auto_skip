@@ -284,9 +284,9 @@ class SkipAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 三级：事件没有 source（部分 ROM 不提供），在缓存的节点树里找右上角候选节点
+        // 三级：事件没有 source（部分 ROM 不提供），在缓存的节点树里找最像关闭按钮的候选
         if (isSparse(text, desc, viewId) && bounds == null) {
-            val hit = topRightCandidate(pkg)
+            val hit = bestSkipCandidate(pkg)
             if (hit != null) {
                 text = hit.text?.takeIf { it.isNotBlank() }
                 desc = hit.contentDescription?.takeIf { it.isNotBlank() }
@@ -294,7 +294,7 @@ class SkipAccessibilityService : AccessibilityService() {
                 clickable = hit.clickable
                 bounds = hit.bounds
                 method = LearnedSample.METHOD_COORDINATE
-                note = "系统未提供点击节点，已从窗口快照中取右上角候选"
+                note = "系统未提供点击节点，已从窗口快照中取边缘候选"
             }
         }
 
@@ -396,12 +396,14 @@ class SkipAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 四级兜底：系统没给出点击节点时，从缓存节点树里挑一个最像「跳过」的右上角节点。
+     * 四级兜底：系统没给出点击节点时，从缓存节点树里挑一个「最像跳过/关闭按钮」的节点。
      *
-     * 为什么这样做：开屏广告的「跳过」几乎总在右上角，且带「跳过 / 关闭 / 跳过 3」文字；
-     * 即使拿不到事件源，也能靠位置 + 关键词给出可用样本，避免学习直接失败。
+     * v0.3.0 从「只找右上角」改为**四角 + 上下边缘**全扫：
+     * 旧版硬性要求 `cx > 0.5w && cy < 0.35h`，等于假设跳过按钮一定在右上角，
+     * 导致左上角、底部横幅、右下角的关闭按钮完全学不到。
+     * 现在按「关键词 > 可点击 > 小尺寸 > 靠近角落」综合打分，任何角落都能被选中。
      */
-    private fun topRightCandidate(pkg: String): NodeSnapshot? {
+    private fun bestSkipCandidate(pkg: String): NodeSnapshot? {
         val nodes = ensureLearningCache(pkg) ?: return null
         val (screenW, screenH) = ScreenUtils.screenSize(this)
         if (screenW <= 0 || screenH <= 0) return null
@@ -410,19 +412,30 @@ class SkipAccessibilityService : AccessibilityService() {
         var bestScore = Int.MIN_VALUE
         for (node in nodes) {
             if (!node.visible) continue
-            val b = node.bounds?.split(",")?.mapNotNull { it.toIntOrNull() } ?: continue
+            val b = node.bounds?.split(",")?.mapNotNull { it.toIntOrNull() }?.toIntArray()
+                ?: continue
             if (b.size != 4) continue
             val cx = (b[0] + b[2]) / 2f
             val cy = (b[1] + b[3]) / 2f
-            if (cx <= 0.5f * screenW || cy >= 0.35f * screenH) continue
+            val widthRatio = (b[2] - b[0]).toFloat() / screenW
+
+            // 只考虑「边缘区」的节点：屏幕中间的内容块不会是关闭按钮
+            if (!inEdgeZone(b, screenW, screenH)) continue
+            // 过宽的节点不是关闭按钮（通栏整条广告不算）
+            if (widthRatio > 0.6f) continue
 
             val label = (node.text ?: "") + " " + (node.contentDescription ?: "")
             var score = 0
             if (LearningController.SKIP_HINTS.any { label.contains(it, ignoreCase = true) }) score += 100
             if (node.clickable) score += 20
-            if (node.text != null || node.contentDescription != null) score += 10
-            // 越靠右上角越优先
-            score += ((1f - cx / screenW) * 10).toInt() + ((1f - cy / screenH) * 10).toInt()
+            if (!node.text.isNullOrBlank() || !node.contentDescription.isNullOrBlank()) score += 15
+            // 尺寸越小越像关闭按钮
+            if (widthRatio <= 0.12f) score += 15 else if (widthRatio <= 0.22f) score += 10
+            // 越靠近四角越优先（四个角一视同仁，不再只偏向右上）
+            score += (30 - (distToNearestCorner(cx, cy, screenW, screenH) /
+                kotlin.math.hypot(screenW.toFloat(), screenH.toFloat()) * 30).toInt())
+                .coerceAtLeast(0)
+
             if (score > bestScore) {
                 best = node
                 bestScore = score
@@ -431,12 +444,31 @@ class SkipAccessibilityService : AccessibilityService() {
         return best
     }
 
+    /** 边缘安全区：四角小块、上下边缘带、左右边缘的中上部（关闭按钮的实际分布范围）。 */
+    private fun inEdgeZone(b: IntArray, w: Int, h: Int): Boolean {
+        val cx = (b[0] + b[2]) / 2f
+        val cy = (b[1] + b[3]) / 2f
+        val nearTop = cy < h * 0.20f
+        val nearBottom = cy > h * 0.80f
+        val nearSide = cx < w * 0.25f || cx > w * 0.75f
+        return nearTop || nearBottom || (nearSide && (cy < h * 0.35f || cy > h * 0.65f))
+    }
+
+    private fun distToNearestCorner(cx: Float, cy: Float, w: Int, h: Int): Float = minOf(
+        kotlin.math.hypot(cx, cy),
+        kotlin.math.hypot(w - cx, cy),
+        kotlin.math.hypot(cx, h - cy),
+        kotlin.math.hypot(w - cx, h - cy),
+    )
+
     /**
-     * 学习捕获的外科手术式过滤：目标包里任何位置的手动点击都会被上报，
-     * 但开屏广告期间用户也可能真的在点广告内容。这里只放行「像跳过按钮」的点击：
-     * 1. 有「跳过 / 关闭」类关键词 → 放行；
-     * 2. 落在上方区域（可能的跳过按钮位置）且被标记可点击 → 放行；
-     * 3. 其余（页面中部的大块内容、列表项等）→ 不采信，并在日志里留一条说明。
+     * 学习捕获的过滤：目标包里任何点击都会被上报，但开屏期间用户也可能真的在点广告内容。
+     * 这里只放行「像跳过/关闭按钮」的点击（v0.3.0 放宽区域、新增叉号与纯图标判定）：
+     * 1. 文字/描述命中「跳过 / 关闭 / ✕ / skip / close」类关键词 → 放行；
+     * 2. 落在**任意边缘区**（四角 / 上下边缘 / 左右边缘）且是小尺寸可点击节点 → 放行；
+     * 3. 其余（页面中部的大块内容、列表项等）→ 不采信，并在日志里留说明。
+     *
+     * 旧版第 2 条是「只在上方 35%」，导致底部的关闭按钮点了也不算数。
      */
     private fun isLookingLikeSkipButton(event: AccessibilityEvent): Boolean {
         val node = event.source
@@ -454,9 +486,13 @@ class SkipAccessibilityService : AccessibilityService() {
             val (screenW, screenH) = ScreenUtils.screenSize(this)
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            val cy = rect.centerY()
             allowed = screenW > 0 && screenH > 0 &&
-                cy < screenH * SKIP_ZONE_HEIGHT_RATIO &&
+                node.isClickable &&
+                inEdgeZone(
+                    intArrayOf(rect.left, rect.top, rect.right, rect.bottom),
+                    screenW,
+                    screenH,
+                ) &&
                 rect.width() < screenW * 0.6f
         }
         node?.recycle()
@@ -466,7 +502,7 @@ class SkipAccessibilityService : AccessibilityService() {
                 snapshot = null,
                 actionType = "LEARN_IGNORE",
                 success = false,
-                failReason = "这次点击不像「跳过 / 关闭」按钮，已忽略（避免学到广告内容）",
+                failReason = "这次点击不像「跳过 / 关闭 / ✕」按钮，已忽略（避免学到广告内容）",
                 eventType = "LEARNING",
                 matchedBy = "过滤规则：关键词 + 上方区域",
                 pkgOverride = event.packageName?.toString(),
@@ -635,7 +671,7 @@ class SkipAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SkipAccessibilityService"
-        private const val SERVICE_VERSION = "0.2.0"
+        private const val SERVICE_VERSION = "0.3.0"
         private const val DUMP_DELAY_MS = 200L
         private const val ACTIVATION_PROBE_MS = 600L
         private const val SCAN_THROTTLE_MS = 300L
@@ -644,9 +680,8 @@ class SkipAccessibilityService : AccessibilityService() {
         private const val CHILD_SCAN_DEPTH = 3
         private const val MAX_CHILD_SCAN = 12
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
-        private const val SKIP_ZONE_HEIGHT_RATIO = 0.35f
         private const val DEFAULT_FALLBACK_X = 0.92f
-        private const val DEFAULT_FALLBACK_Y = 0.08f
+        private const val DEFAULT_FALLBACK_Y = 0.06f
         private const val REASON_WINDOW_EXPIRED = "超过冷启动窗口"
 
         /** 同进程实例句柄，供 UI 调用 dumpCurrentWindow / evaluateRule。 */

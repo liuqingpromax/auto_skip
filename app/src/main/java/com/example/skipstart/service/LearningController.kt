@@ -29,7 +29,7 @@ data class LearnedSample(
     val clickable: Boolean,
     val capturedAt: Long,
     val tapRatioX: Float = 0.92f,
-    val tapRatioY: Float = 0.08f,
+    val tapRatioY: Float = 0.06f,
     val screenWidth: Int = 1080,
     val screenHeight: Int = 1920,
     val captureMethod: String = METHOD_SELF,
@@ -250,8 +250,9 @@ class LearningController {
                 recommended = conditions["text"] == null && conditions["desc"] == null,
             )
         }
-        // 位置兜底：仅当读到可用信息（避免纯盲点）或用户确实点在上方区域时才给出
-        if (fallback != null) {
+        // 位置兜底：仅在「完全没有文字/描述线索」时才给（有线索时不需要盲点，避免误触）
+        val hasTextEvidence = conditions["text"] != null || conditions["desc"] != null
+        if (fallback != null && !hasTextEvidence) {
             list += LearningCandidate(
                 rule = ruleOf(
                     id = "learned_pos_$stamp",
@@ -266,9 +267,31 @@ class LearningController {
                     activityPatterns = activityPatterns,
                 ),
                 title = "按位置兜底（保守）",
-                detail = "只在按钮出现在你点击过的位置时才动手，最不容易误触，但可能漏点。",
+                detail = "在原来那个位置点一次（你点的是${areaHintLabelFor(sample)}）。" +
+                    "最不容易误触，但界面变化后可能漏点。",
                 confidence = 55,
                 recommended = false,
+            )
+        }
+
+        // 纯图标兜底（v0.3.0）：即使连 viewId 都没有，也能靠
+        // 「可点击 + 无文字 + 小尺寸 + 位于边缘」认出 ✕ 图标按钮
+        if (!hasTextEvidence && conditions["viewId"] == null) {
+            list += LearningCandidate(
+                rule = ruleOf(
+                    id = "learned_icon_$stamp",
+                    name = "学习规则 · ${shortPkg(sample.packageName)} · 图标",
+                    sample = sample,
+                    conditions = listOf(RuleCondition("icon_button", "*", null, 25)),
+                    action = action,
+                    minScore = 60,
+                    activityPatterns = activityPatterns,
+                ),
+                title = "按纯图标按钮识别",
+                detail = "按钮没有文字也没有描述时用这条：只要出现「可点击、小尺寸、" +
+                    "位于屏幕边缘」的图标按钮就点它。",
+                confidence = 60,
+                recommended = true,
             )
         }
 
@@ -285,30 +308,30 @@ class LearningController {
         buildCandidates(sample).firstOrNull()?.rule
 
     /**
-     * 位置兜底候选的条件。
+     * 位置兜底候选的条件（v0.3.0）。
      *
-     * 关键点：位置规则的价值在于「按用户实际点过的位置点一次」，
-     * 条件只需要能把开屏上的某个节点捞出来即可（真正点击坐标由 action.fallback 决定）。
-     * 因此这里按「证据强度」退化选条件；若确实一点线索都没有，
-     * 返回空 pattern —— 调用方会过滤掉这条候选，UI 提示用户「没拿到可用线索」。
+     * 位置规则的价值在于「按用户实际点过的坐标点一次」，
+     * 条件只需要能把开屏上的某个节点捞出来当作点击载体。
+     * 这里按证据强度退化选条件；若确实一点线索都没有，
+     * 直接返回 `icon_button` 条件 —— 它能匹配「可点击 + 无文字 + 小尺寸 + 位于边缘」的
+     * 纯图标 ✕ 按钮，比留一个空白 pattern 让规则永久失效要好。
      */
     private fun positionCondition(sample: LearnedSample): RuleCondition {
         keywordOf(sample.text)?.let {
-            return RuleCondition("text_regex", Regex.escape(it), null, 50)
+            return RuleCondition("text_regex", Regex.escape(it), null, 55)
         }
         keywordOf(sample.contentDescription)?.let {
-            return RuleCondition("desc_regex", Regex.escape(it), null, 40)
+            return RuleCondition("desc_regex", Regex.escape(it), null, 45)
         }
         sample.viewIdResourceName?.takeIf { it.isNotBlank() }?.let {
-            return RuleCondition("view_id", it, null, 30)
+            return RuleCondition("view_id", it, null, 35)
         }
-        sample.className?.takeIf { it.isNotBlank() }?.let {
-            return RuleCondition("class_name", it, null, 10)
-        }
-        // 没有任何可读信息：位置兜底规则会因为达不到 minScore 而永不触发，
-        // 此时不如不给这条候选，让 UI 明确告诉用户「这个按钮没有可用线索」。
-        return RuleCondition("class_name", "", null, 0)
+        return RuleCondition("icon_button", "*", null, 25)
     }
+
+    /** 该样本的点击落点说明（用于候选规则的文案）。 */
+    private fun areaHintLabelFor(sample: LearnedSample): String =
+        areaHintLabel(areaHintOf(sample.tapRatioX, sample.tapRatioY))
 
     private fun ruleOf(
         id: String,
@@ -333,18 +356,25 @@ class LearningController {
     )
 
     /**
-     * 位置兜底比例，做安全区收口：
-     * - 只允许屏幕上 45% 以内、横向 45%~100% 的「右上角安全区」，避免误点中部内容；
-     * - 超出安全区时钳制回边界，而不是放弃（毕竟用户确实点在那里）。
+     * 位置兜底比例（v0.3.0 重写）。
+     *
+     * 旧版硬编码了一个「右上角安全区」：纵向超过 45% 就**直接放弃**位置兜底，
+     * 等于假设「跳过按钮只可能在屏幕上半部分」——与实际情况不符
+     * （底部横幅广告、左下角关闭按钮都很常见）。
+     *
+     * 现在：用户亲手点过的那一点就是最强证据，原样采用，只做基本的屏幕内钳制；
+     * 真正的防误触由「规则条件 + 位置加权 + 阈值」负责，而不是靠砍掉半个屏幕。
      */
     private fun safeFallback(sample: LearnedSample): RuleFallback? {
         val x = sample.tapRatioX
         val y = sample.tapRatioY
         if (x.isNaN() || y.isNaN()) return null
-        if (y > SAFE_MAX_Y) return null      // 明显点在页面中部/底部，不做位置兜底
-        val clampedX = x.coerceIn(SAFE_MIN_X, 0.98f)
-        val clampedY = y.coerceIn(0.01f, SAFE_MAX_Y)
-        return RuleFallback("click_xy_ratio", clampedX, clampedY)
+        // 钳制到屏幕内，留 1% 边距避免点到屏幕物理边缘导致手势丢失
+        return RuleFallback(
+            type = "click_xy_ratio",
+            x = x.coerceIn(0.01f, 0.99f),
+            y = y.coerceIn(0.01f, 0.99f),
+        )
     }
 
     /** 去掉尾部倒计时数字，生成稳定关键词（"跳过 5" → "跳过"）。 */
@@ -367,12 +397,20 @@ class LearningController {
         /** 默认学习时长：60 秒足够「冷启动 → 开屏 → 点一下」。 */
         const val DEFAULT_TIMEOUT_MS = 60_000L
 
-        private const val SAFE_MIN_X = 0.45f
-        private const val SAFE_MAX_Y = 0.45f
-
-        /** 学习页与捕获逻辑共用的「跳过类」关键词。 */
+        /**
+         * 学习页与捕获逻辑共用的「跳过类」关键词（v0.3.0 扩展）。
+         *
+         * 旧版只有中文「跳过/关闭」+ 两个英文词，导致两种情况学不到：
+         * 1. **叉号按钮**：广告关闭按钮经常就是 ✕ / × / ❌，文字层没有「跳过」二字；
+         * 2. 英文界面 / 繁体界面。
+         */
         val SKIP_HINTS = listOf(
-            "跳过", "关闭", "跳過", "略过", "skip", "Skip", "SKIP", "close", "Close", "关闭广告",
+            // 中文（简繁）
+            "跳过", "跳過", "略过", "略過", "关闭", "關閉", "关闭广告", "跳过广告", "跳过按钮",
+            // 英文
+            "skip", "close", "dismiss", "cancel", "skip ad", "close ad",
+            // 叉号系字符（本身就是关闭语义）
+            "✕", "✖", "✗", "❌", "❎", "×", "⨯", "╳",
         )
 
         /** 供 UI 显示的推荐度文案。 */
@@ -382,20 +420,57 @@ class LearningController {
             else -> "一般"
         }
 
-        /** 点击位置 → 区域名，用于 UI 提示「你点的是右上角」。 */
+        /**
+         * 按屏幕比例判定点击落在哪个区域（v0.3.0）。
+         *
+         * 旧版有个硬编码的安全区：纵向超过 45% 直接放弃位置兜底 —— 这等价于
+         * 「跳过按钮只可能在屏幕上半部分」，与实际情况不符（底部横幅广告的关闭按钮在下方）。
+         * 现在按真实落点给出区域名，位置兜底只在真正「无文字线索」时才启用。
+         */
+        fun areaHintOf(xRatio: Float, yRatio: Float): String {
+            val vertical = when {
+                yRatio < 0.25f -> "top"
+                yRatio > 0.75f -> "bottom"
+                else -> "middle"
+            }
+            val horizontal = when {
+                xRatio < 0.35f -> "left"
+                xRatio > 0.65f -> "right"
+                else -> "center"
+            }
+            return if (vertical == "middle") {
+                when (horizontal) {
+                    "left" -> "left"
+                    "right" -> "right"
+                    else -> "center"
+                }
+            } else {
+                "${vertical}_$horizontal"
+            }
+        }
+
+        /** 区域名 → 中文说明，用于 UI 展示「你点的是右下角」。 */
+        fun areaHintLabel(area: String): String = when (area) {
+            "top_left" -> "左上角"
+            "top_right" -> "右上角"
+            "top_center" -> "顶部中间"
+            "bottom_left" -> "左下角"
+            "bottom_right" -> "右下角"
+            "bottom_center" -> "底部中间"
+            "left" -> "左侧边缘"
+            "right" -> "右侧边缘"
+            "top" -> "顶部区域"
+            "bottom" -> "底部区域"
+            else -> "屏幕中间"
+        }
+
+        /** 点击位置 → 区域名，用于 UI 提示（基于节点 bounds）。 */
         fun areaLabel(bounds: String?, w: Int, h: Int): String {
             val b = bounds?.split(",")?.mapNotNull { it.toIntOrNull() } ?: return "未知"
-            if (b.size != 4) return "未知"
+            if (b.size != 4 || w <= 0 || h <= 0) return "未知"
             val cx = (b[0] + b[2]) / 2f
             val cy = (b[1] + b[3]) / 2f
-            val rightHalf = cx > 0.5f * w
-            val bottomHalf = cy > 0.5f * h
-            return when {
-                !bottomHalf && rightHalf -> "右上角"
-                !bottomHalf -> "左上角"
-                rightHalf -> "右下角"
-                else -> "左下角"
-            }
+            return areaHintLabel(areaHintOf(cx / w, cy / h))
         }
 
         /** 百分比文案，避免 UI 层重复算。 */

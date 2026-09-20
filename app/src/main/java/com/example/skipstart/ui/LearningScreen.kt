@@ -298,7 +298,8 @@ private fun IdleSection(
             color = Color(0xFFC62828),
             lines = listOf(
                 "· 目标 App 要真的打开，并等开屏广告出现；",
-                "· 出现「跳过」按钮后，用手指点它一下（不是长按）；",
+                "· 出现「跳过 / 关闭 / ✕」按钮后，用手指点它一下（不是长按）；",
+                "· 按钮在哪个角落都不影响，左上、右下、底部横幅都能学；",
                 "· 点完 1 秒内切回本应用即可看到结果。",
                 "下面重新选一次目标 App 再试。",
             ),
@@ -325,7 +326,7 @@ private fun IdleSection(
         ) {
             Text("选择要学习的 App", style = MaterialTheme.typography.titleMedium)
             Text(
-                "选一个广告总是要手点的 App，接下来只需手点一次「跳过」，之后交给它自动点。",
+                "选一个广告总是要手点的 App，接下来只需手点一次「跳过 / 关闭 / ✕」，之后交给它自动点。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -459,7 +460,7 @@ private fun RunningCard(
                 color = Color(0xFFE65100),
             )
             Text(
-                "现在做一件事：等开屏广告出现，用手指点一下「跳过」按钮。",
+                "现在做一件事：等开屏广告出现，用手指点一下「跳过」文字，或右上/左上/下方的 ✕ 按钮。",
                 style = MaterialTheme.typography.bodyLarge,
             )
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -475,7 +476,7 @@ private fun RunningCard(
             NoticeCard(
                 title = "如果目标 App 没弹出来",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lines = listOf("点下面的按钮手动打开它，然后照样点「跳过」。"),
+                lines = listOf("点下面的按钮手动打开它，然后照样点「跳过 / ✕」。"),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onOpenTarget) { Text("打开目标 App") }
@@ -673,12 +674,18 @@ private fun GuideCard() {
         ) {
             Text("学习模式怎么用（三步）", style = MaterialTheme.typography.titleMedium)
             GuideStep(1, "选 App", "在上方列表点一下要学习的 App（如高德地图）。")
-            GuideStep(2, "点一次跳过", "本应用会自动帮你打开它；等开屏广告出现，用手指点一下「跳过」。")
+            GuideStep(
+                2,
+                "点一次跳过",
+                "本应用会自动帮你打开它；等开屏广告出现，用手指点一下「跳过」文字，或那个 ✕ 按钮。",
+            )
             GuideStep(3, "保存规则", "切回本应用，选一条候选规则保存；下次打开就自动跳过。")
             HorizontalDivider()
             Text("几点说明", style = MaterialTheme.typography.titleSmall)
             Text(
                 "· 学习期间不会自动点击，随便点不会误触；\n" +
+                    "· 跳过按钮不一定在右上角：左上、右下、底部横幅都支持，你点哪里就学哪里；\n" +
+                    "· 关闭按钮可能是 ✕ 叉号（没有文字），也能学到；\n" +
                     "· 一次学习只记一个按钮，点错了点「重新学习一次」即可；\n" +
                     "· 学习时长 60 秒，超时自动结束，不会一直在后台跑；\n" +
                     "· 保存后想在手机上验证：把目标 App 从最近任务划掉再打开。",

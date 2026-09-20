@@ -98,12 +98,40 @@ class RuleRepository(context: Context) {
         } catch (_: Exception) {
             emptyList()
         }
-        // 内置规则重新种子：被持久化的覆盖（保留用户改动），缺失的补回
+        // 内置规则按版本号升级（v0.3.0）：
+        // - 缺失      → 补回；
+        // - 版本偏低  → 用新内容替换（保留用户的启用/禁用选择）；
+        // - 已是最新  → 原样保留（用户可能用规则编辑器改过参数，不能覆盖）。
+        //
+        // 旧版只做「缺失才补」，导致老用户升级后仍跑着写死 top_right 的旧规则，
+        // 内置规则的修复永远送不到用户手上——这正是「改了匹配逻辑却不见效」的原因之一。
+        var upgraded = false
         val result = persisted.toMutableList()
         BuiltinRules.all().forEach { builtin ->
-            if (result.none { it.id == builtin.id }) result += builtin
+            val index = result.indexOfFirst { it.id == builtin.id }
+            when {
+                index < 0 -> {
+                    result += builtin
+                    upgraded = true
+                }
+                result[index].version < builtin.version -> {
+                    result[index] = builtin.copy(enabled = result[index].enabled)
+                    upgraded = true
+                }
+                else -> Unit
+            }
+        }
+        if (upgraded) {
+            persistList(result)
         }
         return result
+    }
+
+    /** 直接落盘给定列表（供 load 阶段的内置规则升级使用，此时 _rules 尚未就绪）。 */
+    private fun persistList(list: List<Rule>) {
+        val array = JSONArray()
+        list.forEach { array.put(it.toJson()) }
+        prefs.edit().putString(KEY_JSON, array.toString()).apply()
     }
 
     private fun persist() {

@@ -41,11 +41,13 @@ import org.json.JSONObject
 import kotlin.math.roundToInt
 
 private val AREA_OPTIONS = listOf(
+    "full" to "不限",
     "top_right" to "右上",
     "top_left" to "左上",
     "bottom_right" to "右下",
     "bottom_left" to "左下",
-    "full" to "全屏",
+    "top" to "顶部",
+    "bottom" to "底部",
 )
 
 private val NEW_RULE_JSON_TEMPLATE = """
@@ -61,7 +63,8 @@ private val NEW_RULE_JSON_TEMPLATE = """
   "matchMode": "any",
   "minScore": 60,
   "conditions": [
-    { "type": "text_regex", "pattern": "跳过", "area": "top_right", "score": 50 }
+    { "type": "text_regex", "pattern": "跳过|关闭", "score": 55 },
+    { "type": "icon_button", "pattern": "*", "score": 25 }
   ],
   "action": { "type": "click_node_or_parent" }
 }
@@ -97,7 +100,11 @@ fun RuleEditDialog(
         mutableStateOf(extractKeywords(initialRule, "view_id"))
     }
     var area by remember(initialRule) {
-        mutableStateOf(initialRule?.conditions?.firstOrNull()?.area ?: "top_right")
+        mutableStateOf(normalizeArea(initialRule?.conditions?.firstOrNull()?.area))
+    }
+    // 「纯图标按钮」条件：匹配可点击 + 无文字 + 小尺寸 + 位于边缘的关闭按钮
+    var iconButton by remember(initialRule) {
+        mutableStateOf(initialRule?.conditions?.any { it.type == "icon_button" } ?: false)
     }
     var windowSeconds by remember(initialRule) {
         mutableStateOf(((initialRule?.launchWindowMs ?: 8_000L) / 1000L).toFloat().coerceIn(3f, 15f))
@@ -123,18 +130,24 @@ fun RuleEditDialog(
         require(name.isNotBlank()) { "缺少规则名称" }
         val pkgs = splitKeywords(pkgText)
         require(pkgs.isNotEmpty()) { "目标包名不能为空" }
+        // 区域留空表示全屏匹配 + 位置加权（推荐）；显式选择区域时才写进条件做硬过滤
+        val areaValue = area.takeIf { it.isNotEmpty() && it != "full" }
         val conditions = buildList {
             splitKeywords(textKeywords).forEach {
-                add(RuleCondition("text_regex", Regex.escape(it), area, 50))
+                add(RuleCondition("text_regex", Regex.escape(it), areaValue, 55))
             }
             splitKeywords(descKeywords).forEach {
-                add(RuleCondition("desc_regex", Regex.escape(it), area, 40))
+                add(RuleCondition("desc_regex", Regex.escape(it), areaValue, 45))
             }
             splitKeywords(viewIdKeywords).forEach {
-                add(RuleCondition("view_id", it, area, 30))
+                add(RuleCondition("view_id", it, areaValue, 35))
+            }
+            if (iconButton) {
+                // pattern 仅作占位，实际判定走 RuleMatcher 的 icon_button 分支
+                add(RuleCondition("icon_button", "*", null, 25))
             }
         }
-        require(conditions.isNotEmpty()) { "关键词或 viewId 至少填写一项" }
+        require(conditions.isNotEmpty()) { "关键词、viewId 至少填一项，或勾选「纯图标按钮」" }
         val max = maxClicks.trim().toIntOrNull() ?: 1
         require(max in 1..5) { "每次启动最多点击次数需为 1-5" }
         return Rule(
@@ -152,8 +165,10 @@ fun RuleEditDialog(
             action = initialRule?.action
                 ?: RuleAction(
                     "click_node_or_parent",
-                    RuleFallback("click_xy_ratio", 0.92f, 0.08f),
+                    // 兜底改为右上角安全区：位置加权下四角都在候选内，兜底只在节点点击全失败时使用
+                    RuleFallback("click_xy_ratio", 0.92f, 0.06f),
                 ),
+            version = initialRule?.version ?: 0,
         )
     }
 
@@ -163,7 +178,8 @@ fun RuleEditDialog(
         textKeywords = extractKeywords(rule, "text_regex")
         descKeywords = extractKeywords(rule, "desc_regex")
         viewIdKeywords = extractKeywords(rule, "view_id")
-        area = rule.conditions.firstOrNull()?.area ?: "top_right"
+        area = normalizeArea(rule.conditions.firstOrNull()?.area)
+        iconButton = rule.conditions.any { it.type == "icon_button" }
         windowSeconds = (rule.launchWindowMs / 1000L).toFloat().coerceIn(3f, 15f)
         cooldownSeconds = (rule.cooldownMs / 1000L).toFloat().coerceIn(1f, 10f)
         maxClicks = rule.maxClicksPerLaunch.toString()
@@ -175,7 +191,10 @@ fun RuleEditDialog(
         textKeywords = template.textKeywords
         descKeywords = template.descKeywords
         viewIdKeywords = template.viewIdKeywords
-        area = template.area
+        area = normalizeArea(template.area)
+        // 「纯图标关闭」模板靠 icon_button 条件工作，没有关键词
+        iconButton = template.id == RuleTemplates.ICON_ONLY_TEMPLATE_ID ||
+            iconButton
         error = null
     }
 
@@ -255,6 +274,7 @@ fun RuleEditDialog(
                         descKeywords = descKeywords, onDescKeywords = { descKeywords = it },
                         viewIdKeywords = viewIdKeywords, onViewIdKeywords = { viewIdKeywords = it },
                         area = area, onArea = { area = it },
+                        iconButton = iconButton, onIconButton = { iconButton = it },
                         windowSeconds = windowSeconds, onWindowSeconds = { windowSeconds = it },
                         cooldownSeconds = cooldownSeconds, onCooldownSeconds = { cooldownSeconds = it },
                         maxClicks = maxClicks, onMaxClicks = { maxClicks = it },
@@ -292,6 +312,7 @@ private fun FormFields(
     descKeywords: String, onDescKeywords: (String) -> Unit,
     viewIdKeywords: String, onViewIdKeywords: (String) -> Unit,
     area: String, onArea: (String) -> Unit,
+    iconButton: Boolean, onIconButton: (Boolean) -> Unit,
     windowSeconds: Float, onWindowSeconds: (Float) -> Unit,
     cooldownSeconds: Float, onCooldownSeconds: (Float) -> Unit,
     maxClicks: String, onMaxClicks: (String) -> Unit,
@@ -345,7 +366,7 @@ private fun FormFields(
             onValueChange = { onTextKeywords(it); clearError() },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("按钮文本关键词（逗号分隔）") },
-            supportingText = { Text("如：跳过, 跳过广告") },
+            supportingText = { Text("如：跳过, 跳过广告, ✕, ×；位置不限") },
             singleLine = true,
         )
         OutlinedTextField(
@@ -353,6 +374,7 @@ private fun FormFields(
             onValueChange = { onDescKeywords(it); clearError() },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("描述关键词（可选）") },
+            supportingText = { Text("纯图标按钮常只有描述，如：关闭, close") },
             singleLine = true,
         )
         OutlinedTextField(
@@ -360,9 +382,21 @@ private fun FormFields(
             onValueChange = { onViewIdKeywords(it); clearError() },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("viewId 关键词（可选）") },
+            supportingText = { Text("如：close, iv_close") },
             singleLine = true,
         )
-        Text("按钮区域", style = MaterialTheme.typography.labelLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("也匹配纯图标按钮", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "无文字无描述的 ✕ 图标：要求可点击、按钮小、且位于屏幕边缘（四角/上下边缘）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = iconButton, onCheckedChange = { onIconButton(it); clearError() })
+        }
+        Text("按钮位置", style = MaterialTheme.typography.labelLarge)
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -375,6 +409,12 @@ private fun FormFields(
                 )
             }
         }
+        Text(
+            "建议选「不限」：跳过按钮可能出现在任何角落。位置会作为加分项（四角最高），" +
+                "屏幕中间不加分，所以「不限」也不会乱点。只有确认按钮一定在某条边时才限定位置。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             "冷启动窗口：${windowSeconds.roundToInt()} 秒",
             style = MaterialTheme.typography.titleSmall,
@@ -413,7 +453,8 @@ private fun FormFields(
             steps = 4,
         )
         Text(
-            "条件得分 + 右上角20 + 可点击10，总分 ≥ 阈值才点击。",
+            "得分 = 条件分 + 位置分(0~25，四角最高、中间为0) + 可点击10 + 尺寸分(0~15)，" +
+                "总分 ≥ 阈值才执行点击。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -436,6 +477,16 @@ private fun FormFields(
 /** 按逗号/换行拆分关键词。 */
 private fun splitKeywords(s: String): List<String> =
     s.split(",", "，", "\n").map { it.trim() }.filter { it.isNotEmpty() }
+
+/**
+ * 归一化区域值（v0.3.0）：旧规则里 `area` 可能为空、`null` 或旧枚举值。
+ * - 空 / null / "full" → 统一成 "full"（界面上显示为「不限」）；
+ * - 其他合法值原样保留。
+ */
+private fun normalizeArea(raw: String?): String {
+    if (raw.isNullOrBlank()) return "full"
+    return if (AREA_OPTIONS.any { it.first == raw }) raw else "full"
+}
 
 /** 反转义字面量（Regex.escape 产生的 \Q...\E），无法反转义则原样返回。 */
 private fun unescapeLiteral(pattern: String): String =

@@ -15,7 +15,17 @@
 | CI 失败定位 | 工作流头部列出各 step 失败的含义；`Verify toolchain` 步骤打印完整环境信息 |
 | 发布产物 | `SkipStart-v{versionName}-debug.apk`，随 Release 发布 |
 
-## 0.1 v0.2.0 变更摘要
+## 0.1 v0.3.0 变更摘要（匹配通用性）
+
+> 触发原因（用户反馈）：**「跳过」不一定在右上角；关闭按钮也可能是叉号 ✕。**
+
+| 问题 | 原因（v0.1.0~v0.2.5） | v0.3.0 做法 |
+|---|---|---|
+| 按钮不在右上角就点不到 | 内置规则三条条件全部写死 `"area": "top_right"`，`RuleMatcher` 把 area 当**硬过滤**；位置分也只在右上角给（`TOP_RIGHT_BONUS`）；学习模式的捕获兜底与误点过滤同样只认上方区域；位置兜底还有个「纵向 >45% 直接放弃」的硬编码 | `area` 留空 = 全屏匹配，位置改为**加权**：四角 25 / 顶部 22 / 底部 18 / 左右 10 / **中间 0**；四角一视同仁；学习捕获改为四角+上下边缘全扫；误点过滤放宽到任意边缘区；位置兜底按实际点击角落生成，删掉 45% 硬编码 |
+| 叉号 ✕ 按钮学不到也点不到 | 关闭按钮常是纯 ✕ 图标：无 `text`，`contentDescription` 也可能为空；关键词里没有叉号系字符；也没有「纯图标按钮」这类条件 | 新增 `icon_button` 条件类型（可点击 + 无文字 + 无描述 + 宽 ≤22% 屏宽、高 ≤18% 屏高 + 位于边缘）；关键词扩充叉号系字符与英文词；学习模式新增「按纯图标按钮识别」候选 |
+| 内置规则的修复送不到老用户 | `RuleRepository.load()` 只在内置规则**缺失**时补齐，已存在就原样保留 → 用户本机持久化的旧规则一直生效 | 内置规则带 `version`（`BuiltinRules.VERSION`），持久化版本偏低时自动升级为新内容并保留用户的启用/禁用选择；用户自建规则不受影响 |
+
+## 0.2 v0.2.0 变更摘要
 
 | 问题 | 原因（v0.1.0） | v0.2.0 做法 |
 |---|---|---|
@@ -101,9 +111,9 @@ auto_skip/
 ```kotlin
 // ===== engine/Rule.kt（阶段3；JSON 字段与说明书七章一致）=====
 data class RuleCondition(
-    val type: String,        // text_regex | desc_regex | view_id | class_name
+    val type: String,        // text_regex | desc_regex | view_id | class_name | icon_button
     val pattern: String,
-    val area: String? = null, // top_right / top_left / bottom_right ...
+    val area: String? = null, // null/空/full = 全屏匹配（位置改加权）；否则硬过滤，见 3.1 节
     val score: Int = 0
 )
 data class RuleFallback(val type: String, val x: Float, val y: Float) // click_xy_ratio
@@ -240,9 +250,25 @@ class LearningController {
     val sample: StateFlow<LearnedSample?>
     fun start(packageName: String); fun stop(); fun clearSample()
     fun submit(sample: LearnedSample)       // 服务回调：仅目标包；捕获一次即自动停止
-    fun buildCandidateRule(sample: LearnedSample): Rule?  // 自动附加右上角+关键词约束
+    fun buildCandidateRule(sample: LearnedSample): Rule?  // 兼容旧调用：返回最推荐的一条
+    fun buildCandidates(sample: LearnedSample): List<LearningCandidate>  // v0.2.0 起：多候选 + 推荐度
 }
 ```
+
+## 3.1 规则条件类型（v0.3.0）
+
+| type | 语义 | 关键字段 | 备注 |
+|---|---|---|---|
+| `text_regex` | 节点 `text` 正则匹配 | `pattern`、`score` | 关键词按字面量转义后写入 |
+| `desc_regex` | 节点 `contentDescription` 正则匹配 | `pattern`、`score` | 纯图标按钮常只有描述 |
+| `view_id` | `viewIdResourceName` 包含匹配 | `pattern`、`score` | 同版本最精确 |
+| `class_name` | `className` 包含匹配 | `pattern`、`score` | 少用 |
+| `icon_button` | **v0.3.0 新增**：纯图标关闭按钮 | `score`（pattern 仅占位） | 要求可点击 + 无文字 + 无描述 + 宽 ≤22% 屏宽、高 ≤18% 屏高 + 位于边缘区 |
+
+**`area` 字段语义（v0.3.0 变更）**：
+
+- 省略 / 空 / `"full"` → **全屏匹配**，位置只作加分（**推荐，内置规则与模板默认**）；
+- `top_right` / `top_left` / `bottom_right` / `bottom_left` / `top` / `bottom` / `left` / `right` → 仍作**硬过滤**，仅供 JSON 模式精确控制或特殊布局使用。
 
 ## 4. 核心链路
 
@@ -250,10 +276,21 @@ class LearningController {
 
 ```
 监听前台 App → 判断是否目标包名/Activity → 抓取无障碍节点树
-→ 识别“跳过/关闭/×/倒计时” → 执行点击 → 冷却防误触
+→ 识别「跳过 / 关闭 / ✕ / 倒计时」→ 位置与尺寸加权评分 → 执行点击 → 冷却防误触
 ```
 
-### 4.2 学习模式（v0.2.0 重做）
+**评分模型（v0.3.0）**：
+
+```
+总分 = Σ条件分 + 位置分(0..25) + 可点击(10) + 尺寸分(0..15)     ≥ minScore(默认60) 才点击
+位置分：四角 25 / 顶部边缘 22 / 底部边缘 18 / 左右边缘 10 / 屏幕中间 0
+尺寸分：宽 ≤12% 25→15分、≤22%→10分、≤35%→5分、更大 0
+```
+
+因此：四角的纯 ✕ 图标 = 25+25+10+15 = 75 达标；屏幕中间的纯图标拿不到位置分，无法达标；
+带「跳过」文字的中部按钮靠文字分（55）也能达标 —— 兼顾「任意位置」与「防误触」。
+
+### 4.2 学习模式（v0.2.0 重做，v0.3.0 扩展识别范围）
 
 ```
 [UI] 学习页选目标 App（InstalledAppScanner 列本机应用）
@@ -266,11 +303,11 @@ class LearningController {
       ↓
 [Service] 目标包窗口事件 → refreshLearningCache() 缓存节点树（供回溯与试跑）
       ↓
-[Service] 用户手动点「跳过」→ TYPE_VIEW_CLICKED / TYPE_VIEW_LONG_CLICKED
+[Service] 用户手动点「跳过 / ✕」→ TYPE_VIEW_CLICKED / TYPE_VIEW_LONG_CLICKED
       ↓
-[Service] isLookingLikeSkipButton()：关键词或右上区域过滤，避免学到广告内容
+[Service] isLookingLikeSkipButton()：关键词，或「任意边缘区 + 可点击 + 小尺寸」过滤，避免学到广告内容
       ↓
-[Service] 四级取样：自身 → 父链（≤6 层）→ 子节点文字 → 快照右上角候选
+[Service] 四级取样：自身 → 父链（≤6 层）→ 子节点文字 → 快照边缘区候选（四角+上下边缘全扫）
       ↓
 [Controller] LearningController.submit(sample)：进入 CAPTURED，自动结束学习
       ↓
@@ -284,26 +321,33 @@ class LearningController {
 **学习会话状态机**：`IDLE → WAITING →（用户点跳过）CAPTURED /（60s 到点）EXPIRED_TIME /（用户取消）EXPIRED_MANUAL`。
 超时与取消都保留目标包信息，UI 会给出「为什么没学到 + 下一步怎么做」的提示，而不是静默回到初始态。
 
+**候选规则来源（v0.3.0）**：文字 / 描述 / viewId / **纯图标（icon_button）** / 位置兜底（按实际点击角落），带推荐度排序。
+
 ## 5. 防误触与安全策略（说明书第 9 章，必须实现）
 
 - 只处理目标包名（规则 `packageNames` 白名单，非目标包直接忽略）；
 - 只在冷启动后 8 秒内（`launchWindowMs` 默认 8000）；
 - 每次启动最多点一次（`maxClicksPerLaunch` 默认 1）；
 - 两次点击冷却 2 秒（`cooldownMs` 默认 2000）；
-- 优先右上角：`area = top_right`，判定 `centerX > 0.6w && centerY < 0.25h`，命中 +20 分；
-- 文本必须命中“跳过/关闭/倒计时”等关键词；总分 ≥ 60 才点击；
-- 不点击“支付/登录/权限/同意/下载”等敏感文本（负名单）；
+- **位置加权而非位置白名单（v0.3.0）**：四角 +25、顶部边缘 +22、底部边缘 +18、左右边缘 +10、**屏幕中间 +0**；四个角一视同仁，中间拿不到位置分；
+- **纯图标按钮严格门槛（v0.3.0）**：`icon_button` 要求可点击 + 无文字 + 无描述 + 宽 ≤22% 屏宽、高 ≤18% 屏高 + 位于边缘区，大块内容区一律不算；
+- 文本需命中「跳过 / 关闭 / ✕ / skip / close」等关键词；总分 ≥ `minScore`（默认 60）才点击；
+- 不点击「支付 / 登录 / 权限 / 同意 / 下载 / 立即 / 领取」等敏感文本（负名单，v0.3.0 扩充）；
 - 点击后立即停止本轮扫描，避免连点；
 - 点击前二次校验节点可见、可点击、未消失；
 - 用户可一键关闭总开关。
 - 阶段 4 收口：以上硬性校验集中在 AntiTouchGuard；全局设置（总开关/窗口/冷却）为硬性上限——窗口取规则与全局的较小值、冷却取较大值，只会更严格。
-- **v0.2.0 学习模式侧防误触**：学习期间服务只观察不动作；手动点击需通过 `isLookingLikeSkipButton`（关键词 + 上方区域 + 宽度占比）过滤；学习会话 60 秒自动超时；位置兜底候选把点击坐标钳制在右上安全区，且要求 `minScore = 100` 才动手。
+- **v0.2.0 学习模式侧防误触**：学习期间服务只观察不动作；学习会话 60 秒自动超时；位置兜底候选要求 `minScore = 100` 才动手。
+- **v0.3.0 调整**：误点过滤从「上方 35%」放宽到「任意边缘区」（否则底部关闭按钮点了也不被采信）；位置兜底删除「纵向 >45% 直接放弃」的硬编码，改为按实际点击角落生成规则 —— 防误触改由「条件分 + 位置加权 + 阈值」共同保证，而非砍掉半个屏幕。
 
-## 6. 内置规则 JSON（阶段 3 落地，与说明书七章示例一致）
+## 6. 内置规则 JSON（v0.3.0：全屏匹配 + 叉号覆盖）
+
+> **修改这段 JSON 后必须把 `BuiltinRules.VERSION` 加 1**，否则老用户本机持久化的旧规则不会被替换。
 
 ```json
 {
   "id": "amap_skip",
+  "version": 1,
   "name": "高德地图开屏跳过",
   "enabled": true,
   "packageNames": ["com.autonavi.minimap"],
@@ -312,17 +356,27 @@ class LearningController {
   "maxClicksPerLaunch": 1,
   "cooldownMs": 2000,
   "matchMode": "any",
+  "minScore": 60,
   "conditions": [
-    { "type": "text_regex", "pattern": ".*跳过\\s*\\d*.*", "area": "top_right", "score": 50 },
-    { "type": "desc_regex", "pattern": "跳过|关闭", "area": "top_right", "score": 40 },
-    { "type": "text_regex", "pattern": "\\d+\\s*秒?\\s*跳过", "area": "top_right", "score": 30 }
+    { "type": "text_regex", "pattern": "跳过|跳過|略过|跳过广告|关闭广告", "score": 55 },
+    { "type": "text_regex", "pattern": "\\d+\\s*秒?\\s*(后)?\\s*(跳过|关闭)", "score": 50 },
+    { "type": "text_regex", "pattern": "skip|close|dismiss", "score": 45 },
+    { "type": "text_regex", "pattern": "✕|✖|✗|×|⨯|╳|❌|❎", "score": 50 },
+    { "type": "desc_regex", "pattern": "跳过|关闭|skip|close|dismiss", "score": 45 },
+    { "type": "desc_regex", "pattern": "✕|✖|✗|×|❌|关闭按钮", "score": 50 },
+    { "type": "view_id", "pattern": "close", "score": 35 },
+    { "type": "view_id", "pattern": "skip", "score": 35 },
+    { "type": "icon_button", "pattern": "*", "score": 25 }
   ],
   "action": {
     "type": "click_node_or_parent",
-    "fallback": { "type": "click_xy_ratio", "x": 0.92, "y": 0.08 }
+    "fallback": { "type": "click_xy_ratio", "x": 0.92, "y": 0.06 }
   }
 }
 ```
+
+**与旧版的关键差异**：全部条件**不再带 `area`**（旧版三条都写死 `"area": "top_right"`），
+因此按钮出现在任何角落都能匹配，位置改为由 `RuleMatcher.positionScore` 加权。
 
 ## 7. 阶段路线（对应说明书第 13 章）
 
@@ -342,7 +396,8 @@ class LearningController {
 |---|---|---|
 | 8 | 可视化规则编辑器（表单 + JSON 双模式，可互相切换回填） | ✔ 完成 |
 | 9 | 点击评分细化（规则级 minScore 可配 40-90 + 日志得分/命中条件明细）与规则模板（通用跳过/倒计时/×关闭，仅预填） | ✔ 完成 |
-| 10 | **v0.2.0 版本更新**：学习模式重做（三步引导 / 应用选择器 / 自动拉起 / 倒计时 / 多候选 + 推荐度 / 试跑验证）、学习捕获四级取样、无障碍权限机型适配（三级判定 + 三态 UI + 分品牌路径 + 跳转兜底） | ✔ 本次 |
+| 10 | **v0.2.0 版本更新**：学习模式重做（三步引导 / 应用选择器 / 自动拉起 / 倒计时 / 多候选 + 推荐度 / 试跑验证）、学习捕获四级取样、无障碍权限机型适配（三级判定 + 三态 UI + 分品牌路径 + 跳转降级） | ✔ 完成 |
+| 11 | **v0.3.0 通用性更新**：位置硬过滤改加权（四角/上下边缘/左右边缘）、新增 `icon_button` 纯图标/叉号 ✕ 识别、关键词扩充叉号系与英文、学习模式分角落识别、内置规则版本化升级、规则模板与区域选项细化、新增评分模型自检脚本 | ✔ 本次 |
 | P1 后续 | 前台服务通知提高存活率（评估中，收益有限）、更多 App 实测模板 | 待开发 |
 
 ## 8. 关键设计决策
@@ -352,20 +407,35 @@ class LearningController {
 2. **存储**：MVP 用 SharedPreferences 存 JSON 字符串（说明书允许），仓库接口抽象，后续可平滑替换 Room/DataStore。
 3. **冷启动定义**：服务观察到目标包名的 `TYPE_WINDOW_STATE_CHANGED` 时记录 `launchTime` 并重置本轮点击标记，窗口 = `launchWindowMs`。
 4. **节点采集**：转成 `NodeSnapshot` 快照后匹配，不长期持有系统节点，规避 `AccessibilityNodeInfo` 回收问题。
-5. **点击策略链**：节点本身 → 可点击父节点 → bounds 中心 → 比例坐标兜底（0.92, 0.08）；点击前基于快照在当前节点树重定位存活节点（二次校验），避免点击失效节点。
-6. **学习模式（v0.2.0）**：
+5. **点击策略链**：节点本身 → 可点击父节点 → bounds 中心 → 比例坐标兜底（0.92, 0.06）；点击前基于快照在当前节点树重定位存活节点（二次校验），避免点击失效节点。
+6. **学习模式（v0.2.0，v0.3.0 扩展）**：
    - 会话由 `LearningController` 状态机管理，**一次学习只产出一个样本**，避免多按钮互相污染；
-   - 捕获走四级取样（自身 → 父链 → 子节点 → 快照右上角候选），彻底摆脱「无文字即失败」；
-   - 一条样本产出多条候选规则（文字 / 描述 / viewId / 位置兜底），带推荐度与解释，由用户挑；
-   - 规则位置兜底取自**捕获节点的实际中心比例**，并钳制在右上安全区；
+   - 捕获走四级取样（自身 → 父链 → 子节点文字 → **四角/上下边缘候选**），彻底摆脱「无文字即失败」；
+   - 一条样本产出多条候选规则（文字 / 描述 / viewId / **纯图标 icon_button** / 位置兜底），带推荐度与解释，由用户挑；
+   - 位置兜底取自**用户实际点击坐标**（仅做屏幕内钳制），不再限定右上安全区；
    - 节点快照缓存（`NodeCache`，5 分钟 TTL，仅内存）支撑「保存前试跑」。
-7. **无障碍状态判定（v0.2.0）**：不信任单一数据源。
+7. **位置只加权、不白名单（v0.3.0）**：把位置做成「加分项」而不是「准入条件」，
+   是同时满足「按钮可能在任意角落」与「不能乱点」的关键——四角加分、中间 0 分，
+   于是角落的纯 ✕ 图标能达标、中间的图标达不到阈值，无需为每个位置写规则。
+8. **内置规则版本化（v0.3.0）**：内置规则是可迭代的**代码资产**而非一次性种子数据，
+   带版本号才能在修复后真正送达老用户；升级时保留用户的启用/禁用选择，不覆盖用户自建规则。
+9. **无障碍状态判定（v0.2.0）**：不信任单一数据源。
    一级 `AccessibilityManager.getEnabledAccessibilityServiceList()`，
    二级宽容解析 `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`（全名 / 短名 / 仅包名 / 组件解析四种写法），
    三级服务运行期真实连接态 `AccessibilityUtils.serviceConnected`（由服务 onServiceConnected / onUnbind 直接写入）。
    UI 由此呈现三态，把 ROM 差异暴露成可操作的提示，而不是一句「未开启」。
 
-## 9. 无障碍机型适配策略（v0.2.0 新增）
+## 9. 匹配通用性设计（v0.3.0 新增）
+
+| 现象 | 根因（旧版） | 我方对策 |
+|---|---|---|
+| 按钮不在右上角就永远点不到 | 内置规则条件写死 `area: top_right`（硬过滤）；位置分只在右上角给；学习捕获兜底与误点过滤只认上方区域；位置兜底还有「纵向 >45% 放弃」硬编码 | `area` 留空 = 全屏匹配；位置改加权（四角 25 / 顶部 22 / 底部 18 / 左右 10 / 中间 0）；学习捕获四角+上下边缘全扫；误点过滤放宽到任意边缘区；删掉 45% 硬编码 |
+| 叉号 ✕ 按钮点不到 | 关闭按钮常是纯图标：无 `text`、描述可能为空；关键词无叉号系字符；无「纯图标按钮」条件 | 新增 `icon_button` 条件（可点击 + 无文字 + 无描述 + 小尺寸 + 位于边缘）；关键词补 ✕✖✗×⨯╳❌❎ 与 skip/close/dismiss/cancel |
+| 中间区域被误点 | 若简单地把位置白名单放开到全屏，中间的图标/内容也会被点 | 中间位置**不给位置分**：纯图标在中间最多 35 分（<60 阈值）→ 不点；而带「跳过」文字的按钮靠文字分 55 仍可达标 → 位置放开但不失控 |
+| 内置规则改了却不见效 | `load()` 只在内置规则缺失时补齐，已存在则原样保留 → 旧规则永远生效 | 内置规则带 `version`，偏低自动升级（保留用户启用/禁用选择）；改 JSON 必须 `BuiltinRules.VERSION + 1` |
+| 评分逻辑无法验证 | 本仓库无单元测试基建（离线环境无法获取 JUnit 依赖） | 新增 `tools/verify_matcher_model.py`：等价模型覆盖四角/边缘/中间/尺寸/防误触底线，可随时复跑 |
+
+## 9.1 无障碍机型适配策略（v0.2.0 新增）
 
 | 现象 | 根因 | 我方对策 |
 |---|---|---|
