@@ -1,11 +1,21 @@
 # SkipStart（开屏广告自动跳过助手）· 架构设计
 
 > 项目代号 SkipStart · Android · Kotlin + Jetpack Compose + AccessibilityService
-> 当前版本 **v0.2.0**（versionCode 2）
+> 当前版本以 `app/build.gradle.kts` 的 `versionName` 为准（git 标签与之一致）
 > 核心原则：本地运行、规则驱动、防误触、合规、不破解目标 App。
 > 本文档依据《开屏广告自动跳过助手（Android）——AI 开发说明书》编写，接口与路线与说明书第 5、6、7、13 章对齐。
 
-## 0. v0.2.0 变更摘要
+## 0. 版本与 CI 约定
+
+| 项目 | 约定 |
+|---|---|
+| 版本号来源 | `app/build.gradle.kts` 的 `versionCode` / `versionName`，**唯一来源** |
+| git 标签 | 必须与 `versionName` 相同（`v0.2.5` ↔ `"0.2.5"`） |
+| CI | `.github/workflows/build-apk.yml`：推送 `v*` 标签或手动 `workflow_dispatch` 触发 |
+| CI 失败定位 | 工作流头部列出各 step 失败的含义；`Verify toolchain` 步骤打印完整环境信息 |
+| 发布产物 | `SkipStart-v{versionName}-debug.apk`，随 Release 发布 |
+
+## 0.1 v0.2.0 变更摘要
 
 | 问题 | 原因（v0.1.0） | v0.2.0 做法 |
 |---|---|---|

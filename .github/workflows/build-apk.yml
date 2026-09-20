@@ -1,9 +1,14 @@
 name: Build APK
 
 # 用途：云端构建 debug APK。
-# - 推送 v* 标签（如 v0.2.4）自动构建并发布到 Release，供安卓直接下载；
+# - 推送 v* 标签（如 v0.2.5）自动构建并发布到 Release，供安卓直接下载；
 # - 也可在 Actions 页手动触发（workflow_dispatch），产物为构建附件。
-# 仓库 Settings → Actions → Workflow permissions 已设为 Read and write。
+#
+# 排查提示：若本工作流失败，先看失败的 step 名称。
+# - "Verify toolchain"        → JDK / gradlew 权限 / Gradle wrapper 问题
+# - "Install required SDK"    → SDK 组件缺失或 license 未接受
+# - "Build debug APK"         → 真正的编译错误，日志里有 :app:compileDebugKotlin 的报错
+# - "Publish release"         → 多为 GITHUB_TOKEN 权限问题（Settings → Actions → Workflow permissions 需为 Read and write）
 
 on:
   push:
@@ -27,13 +32,31 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Install required SDK components
+        # compileSdk 35 需要 platform 35 与 build-tools 35.0.0；
+        # --licenses 交给 setup-android 处理，这里只补齐组件。
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Verify toolchain
+        # 这一步只做体检，失败信息能直接定位是环境问题还是代码问题。
         run: |
-          chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon
+          set -x
+          java -version
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+          ls -l gradlew
+          file gradlew || true
+          head -n 1 gradlew | od -c | head -2
+          cat gradle/wrapper/gradle-wrapper.properties
+          ./gradlew --version
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Rename APK with version
         run: |
@@ -66,6 +89,7 @@ jobs:
             - 学习模式重做：三步引导、应用列表选择、自动拉起目标 App、60 秒倒计时
             - 学习效果提升：四级取样、多条候选规则 + 推荐度、保存前可试跑
             - 无障碍权限机型适配：三级状态判定、三态首页、分品牌设置路径
+            - CI 修复：补齐 SDK 组件安装与工具链体检，构建失败可一眼定位
 
             完整说明见仓库 README 与 docs/USER_GUIDE.md。
 

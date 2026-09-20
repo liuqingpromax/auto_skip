@@ -1,15 +1,30 @@
 # SkipStart · 开屏广告自动跳过助手（Android）
 
+[![Build APK](https://github.com/liuqingpromax/auto_skip/actions/workflows/build-apk.yml/badge.svg)](https://github.com/liuqingpromax/auto_skip/actions/workflows/build-apk.yml)
+
 基于无障碍服务的开屏广告自动跳过工具：目标 App（如高德地图）冷启动时，在开屏窗口内自动识别并点击“跳过/关闭”按钮。
 
-**当前版本：v0.2.0（versionCode 2）**
+**当前版本：v0.2.5（versionCode 3）**
 
 - 技术栈：Kotlin + Jetpack Compose + AccessibilityService，minSdk 26 / targetSdk 35
 - 原则：纯本地运行（无任何网络权限）、规则驱动、防误触、不破解目标 App
 - 架构与阶段路线：见 `docs/ARCHITECTURE.md`
 - 用户说明书：见 `docs/USER_GUIDE.md`
 
-## v0.2.0 更新内容
+> **版本号约定**：应用版本以 `app/build.gradle.kts` 的 `versionName` 为唯一来源；
+> git 标签必须与之保持一致（`v0.2.5` ↔ `versionName = "0.2.5"`），
+> 避免出现「标签是 v0.2.4、应用内显示 0.2.0」这种对不上的情况。
+
+## v0.2.5 更新内容（CI 修复与发布链路）
+
+| 方向 | 本次改动 |
+|---|---|
+| **CI 补装 SDK 组件** | 新增 `sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"`：`compileSdk 35` 需要 platform 35 与 build-tools 35.0.0，缺失时构建会在配置阶段就失败 |
+| **CI 工具链体检** | 新增 `Verify toolchain` 步骤，先打印 JDK 版本、`JAVA_HOME`/`ANDROID_HOME`、`gradlew` 权限与 shebang 字节、wrapper 配置、`./gradlew --version`；构建失败时能一眼区分「环境问题」还是「代码问题」 |
+| **失败可定位** | 构建改为 `--stacktrace`；工作流头部写明各 step 失败分别代表什么（工具链 / SDK / 编译 / 发布权限） |
+| **版本号对齐** | 应用版本 0.2.0 → **0.2.5**（versionCode 2 → 3），与 git 标签统一；README 增加版本号约定与 CI 状态徽章 |
+
+## v0.2.0 更新内容（功能）
 
 | 方向 | 本次改动 |
 |---|---|
