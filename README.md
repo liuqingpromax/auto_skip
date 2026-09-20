@@ -10,6 +10,7 @@
 - 原则：纯本地运行（无任何网络权限）、规则驱动、防误触、不破解目标 App
 - 架构与阶段路线：见 `docs/ARCHITECTURE.md`
 - 用户说明书：见 `docs/USER_GUIDE.md`
+- **CI 构建失败排查**：见 `docs/CI_TROUBLESHOOTING.md`
 
 > **版本号约定**：应用版本以 `app/build.gradle.kts` 的 `versionName` 为唯一来源；
 > git 标签必须与之保持一致（`v0.2.5` ↔ `versionName = "0.2.5"`），
