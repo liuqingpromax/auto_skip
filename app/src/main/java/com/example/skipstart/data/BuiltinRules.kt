@@ -30,14 +30,16 @@ object BuiltinRules {
      *
      * 版本历史：
      * - 1：v0.3.0 起，条件去掉 `top_right` 硬限制（改位置加权），补充叉号与 icon_button 覆盖。
-     *      （v0.1.0~v0.2.5 的内置规则未带版本号，读出来是 0，因此会被本次升级覆盖。）
+     *      （v0.1.0~v0.2.5 的内置规则未带版本号，读出来是 0，因此会被版本 1 覆盖。）
+     * - 2：v0.4.0 起，倒计时条件同时覆盖**数字在前**（`3跳过`）与**数字在后**（`跳过3`）
+     *      两种排列，并兼容全角数字、`s/秒/后` 等连接符。
      */
-    const val VERSION = 1
+    const val VERSION = 2
 
     const val AMAP_SPLASH_RULE_JSON: String = """
 {
   "id": "amap_skip",
-  "version": 1,
+  "version": 2,
   "name": "高德地图开屏跳过",
   "enabled": true,
   "packageNames": ["com.autonavi.minimap"],
@@ -49,8 +51,9 @@ object BuiltinRules {
   "minScore": 60,
   "conditions": [
     { "type": "text_regex", "pattern": "跳过|跳過|略过|跳过广告|关闭广告", "score": 55 },
-    { "type": "text_regex", "pattern": "\\d+\\s*秒?\\s*(后)?\\s*(跳过|关闭)", "score": 50 },
+    { "type": "text_regex", "pattern": "[0-9０-９]+\\s*[sS秒]?\\s*后?\\s*(跳过|关闭|跳過|關閉)|(跳过|关闭|跳過|關閉)\\s*(后|in|after)?\\s*[sS秒]?\\s*[0-9０-９]+", "score": 55 },
     { "type": "text_regex", "pattern": "skip|close|dismiss", "score": 45 },
+    { "type": "text_regex", "pattern": "[0-9０-９]*\\s*[sS]?\\s*(skip|close|dismiss)|(skip|close|dismiss)\\s*(in|after)?\\s*[0-9０-９]+\\s*[sS]?", "score": 45 },
     { "type": "text_regex", "pattern": "✕|✖|✗|×|⨯|╳|❌|❎", "score": 50 },
     { "type": "desc_regex", "pattern": "跳过|关闭|skip|close|dismiss", "score": 45 },
     { "type": "desc_regex", "pattern": "✕|✖|✗|×|❌|关闭按钮", "score": 50 },

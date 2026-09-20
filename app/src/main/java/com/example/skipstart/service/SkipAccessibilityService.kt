@@ -671,7 +671,7 @@ class SkipAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SkipAccessibilityService"
-        private const val SERVICE_VERSION = "0.3.0"
+        private const val SERVICE_VERSION = "0.4.0"
         private const val DUMP_DELAY_MS = 200L
         private const val ACTIVATION_PROBE_MS = 600L
         private const val SCAN_THROTTLE_MS = 300L

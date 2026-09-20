@@ -4,6 +4,7 @@ import com.example.skipstart.engine.Rule
 import com.example.skipstart.engine.RuleAction
 import com.example.skipstart.engine.RuleCondition
 import com.example.skipstart.engine.RuleFallback
+import com.example.skipstart.engine.SkipTextNormalizer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -171,22 +172,37 @@ class LearningController {
     }
 
     /**
-     * 生成候选规则（v0.2.0 由「一条」改为「多条 + 推荐度」）：
-     * 1. 文字关键词（最稳，抗布局变化）；
+     * 生成候选规则（v0.2.0 起多候选；v0.4.0 起支持倒计时「跳过3 / 3跳过」两种排列）：
+     * 1. 文字关键词（最稳，抗布局变化，且已剥离倒计时数字并生成容错正则）；
      * 2. 内容描述关键词（无障碍描述，常见于纯图标 × 按钮）；
      * 3. viewId（同一 App 版本内最精确）；
-     * 4. 位置兜底（节点读不到任何信息时的最后手段，安全区受限）。
-     * 规则均带位置兜底动作，节点匹配失败时仍按用户实际点击位置点一次。
+     * 4. 纯图标按钮（无文字无描述时的兜底）；
+     * 5. 位置兜底（按用户实际点击坐标）。
      */
     fun buildCandidates(sample: LearnedSample): List<LearningCandidate> {
         val conditions = LinkedHashMap<String, RuleCondition>()
-        val textKeyword = keywordOf(sample.text) ?: buttonLikeKeyword(sample.text)
-        val descKeyword = keywordOf(sample.contentDescription) ?: buttonLikeKeyword(sample.contentDescription)
-        textKeyword?.let { conditions["text"] = RuleCondition("text_regex", Regex.escape(it), null, 50) }
-        descKeyword?.let { conditions["desc"] = RuleCondition("desc_regex", Regex.escape(it), null, 40) }
+        val textKeyword = SkipTextNormalizer.keywordOf(sample.text)
+        val descKeyword = SkipTextNormalizer.keywordOf(sample.contentDescription)
+        textKeyword?.let {
+            // 关键：用容错正则，保证倒计时数字变化（3→5→1）或排列不同（跳过3 / 3跳过）都能命中
+            conditions["text"] = RuleCondition(
+                "text_regex",
+                SkipTextNormalizer.patternForCountdownKeyword(it),
+                null,
+                55,
+            )
+        }
+        descKeyword?.let {
+            conditions["desc"] = RuleCondition(
+                "desc_regex",
+                SkipTextNormalizer.patternForCountdownKeyword(it),
+                null,
+                45,
+            )
+        }
         sample.viewIdResourceName
             ?.takeIf { it.isNotBlank() }
-            ?.let { conditions["viewId"] = RuleCondition("view_id", it, null, 30) }
+            ?.let { conditions["viewId"] = RuleCondition("view_id", it, null, 35) }
 
         val fallback = safeFallback(sample)
         val action = RuleAction(type = "click_node_or_parent", fallback = fallback)
@@ -199,6 +215,8 @@ class LearningController {
         val stamp = sample.capturedAt
 
         conditions["text"]?.let { cond ->
+            val keyword = SkipTextNormalizer.keywordOf(sample.text) ?: "跳过"
+            val countdown = SkipTextNormalizer.hasCountdown(sample.text)
             list += LearningCandidate(
                 rule = ruleOf(
                     id = "learned_text_$stamp",
@@ -210,12 +228,18 @@ class LearningController {
                     activityPatterns = activityPatterns,
                 ),
                 title = "按按钮文字匹配（推荐）",
-                detail = "按钮文字含「${cond.pattern}」时点击，抗界面改版，最稳。",
-                confidence = 92,
+                detail = if (countdown) {
+                    "按钮文字含「$keyword」就点击，**不限倒计时数字** —— " +
+                        "「$keyword」、倒计时写在前面或后面（如 3$keyword / ${keyword}3）都能命中。"
+                } else {
+                    "按钮文字含「$keyword」就点击，抗界面改版，最稳。"
+                },
+                confidence = if (countdown) 94 else 92,
                 recommended = true,
             )
         }
         conditions["desc"]?.let { cond ->
+            val keyword = SkipTextNormalizer.keywordOf(sample.contentDescription) ?: "跳过"
             list += LearningCandidate(
                 rule = ruleOf(
                     id = "learned_desc_$stamp",
@@ -227,7 +251,7 @@ class LearningController {
                     activityPatterns = activityPatterns,
                 ),
                 title = "按内容描述匹配",
-                detail = "按钮的无障碍描述含「${cond.pattern}」时点击，适合纯图标按钮。",
+                detail = "按钮的无障碍描述含「$keyword」时点击，适合纯图标按钮，同样不限倒计时数字。",
                 confidence = 80,
                 recommended = conditions["text"] == null,
             )
@@ -317,11 +341,21 @@ class LearningController {
      * 纯图标 ✕ 按钮，比留一个空白 pattern 让规则永久失效要好。
      */
     private fun positionCondition(sample: LearnedSample): RuleCondition {
-        keywordOf(sample.text)?.let {
-            return RuleCondition("text_regex", Regex.escape(it), null, 55)
+        SkipTextNormalizer.keywordOf(sample.text)?.let {
+            return RuleCondition(
+                "text_regex",
+                SkipTextNormalizer.patternForCountdownKeyword(it),
+                null,
+                55,
+            )
         }
-        keywordOf(sample.contentDescription)?.let {
-            return RuleCondition("desc_regex", Regex.escape(it), null, 45)
+        SkipTextNormalizer.keywordOf(sample.contentDescription)?.let {
+            return RuleCondition(
+                "desc_regex",
+                SkipTextNormalizer.patternForCountdownKeyword(it),
+                null,
+                45,
+            )
         }
         sample.viewIdResourceName?.takeIf { it.isNotBlank() }?.let {
             return RuleCondition("view_id", it, null, 35)
@@ -377,20 +411,6 @@ class LearningController {
         )
     }
 
-    /** 去掉尾部倒计时数字，生成稳定关键词（"跳过 5" → "跳过"）。 */
-    internal fun keywordOf(raw: String?): String? {
-        if (raw.isNullOrBlank()) return null
-        val trimmed = raw.trim().replace(Regex("\\s*\\d+\\s*$"), "").trim()
-        return trimmed.ifBlank { null }
-    }
-
-    /** 节点文字较杂时，从中抠出「跳过 / 关闭」这类关键片段。 */
-    private fun buttonLikeKeyword(raw: String?): String? {
-        if (raw.isNullOrBlank()) return null
-        val hit = SKIP_HINTS.firstOrNull { raw.contains(it) } ?: return null
-        return hit
-    }
-
     private fun shortPkg(pkg: String): String = pkg.substringAfterLast('.')
 
     companion object {
@@ -398,20 +418,12 @@ class LearningController {
         const val DEFAULT_TIMEOUT_MS = 60_000L
 
         /**
-         * 学习页与捕获逻辑共用的「跳过类」关键词（v0.3.0 扩展）。
+         * 「跳过类」关键词（v0.4.0 迁移到 [SkipTextNormalizer.KEYWORDS]）。
          *
-         * 旧版只有中文「跳过/关闭」+ 两个英文词，导致两种情况学不到：
-         * 1. **叉号按钮**：广告关闭按钮经常就是 ✕ / × / ❌，文字层没有「跳过」二字；
-         * 2. 英文界面 / 繁体界面。
+         * 保留此别名是为了服务端（捕获过滤/候选打分）继续复用同一份词表，
+         * 避免词表出现两处定义而漂移。新增词请只改 [SkipTextNormalizer]。
          */
-        val SKIP_HINTS = listOf(
-            // 中文（简繁）
-            "跳过", "跳過", "略过", "略過", "关闭", "關閉", "关闭广告", "跳过广告", "跳过按钮",
-            // 英文
-            "skip", "close", "dismiss", "cancel", "skip ad", "close ad",
-            // 叉号系字符（本身就是关闭语义）
-            "✕", "✖", "✗", "❌", "❎", "×", "⨯", "╳",
-        )
+        val SKIP_HINTS: List<String> get() = SkipTextNormalizer.KEYWORDS
 
         /** 供 UI 显示的推荐度文案。 */
         fun confidenceLabel(confidence: Int): String = when {
