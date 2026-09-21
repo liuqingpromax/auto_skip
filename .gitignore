@@ -17,3 +17,11 @@ spec_extracted.txt
 *.docx
 ~$*
 idea.txt
+
+# 软著申请资料不入库：里面要填真实姓名/身份证号等信息，避免误传到 GitHub。
+# 材料本身可用 tools/gen_copyright_*.py 随时重新生成（见软著申请资料/README）。
+软著申请资料/
+
+# Python 缓存
+__pycache__/
+*.pyc
